@@ -1,0 +1,489 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="theme-color" content="#087f73">
+  <title>Survey Response Analyzer</title>
+  <link rel="icon" type="image/png" href="assets/survey-response-logo.png?v=20260909-1">
+  <link rel="apple-touch-icon" href="assets/survey-response-logo.png?v=20260909-1">
+  <link rel="stylesheet" href="style.css?v=20260903-2">
+</head>
+<body>
+  <header class="app-header">
+    <div class="header-inner">
+      <div class="brand-mark" aria-hidden="true">
+        <img src="assets/survey-response-logo.png?v=20260909-1" alt="" width="40" height="40">
+      </div>
+      <div class="brand-copy">
+        <h1>Survey Response Analyzer</h1>
+        <p>Upload, analyze, compare, and export survey responses</p>
+      </div>
+      <div class="privacy-badge" title="Uploaded files are never sent to a server">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M5.5 8V6.5a4.5 4.5 0 0 1 9 0V8M4 8h12v9H4z"/></svg>
+        Files stay in your browser
+      </div>
+    </div>
+  </header>
+
+  <main class="app-shell">
+    <section id="uploadPanel" class="upload-panel" aria-labelledby="upload-title">
+      <div class="welcome-copy">
+        <div class="welcome-icon" aria-hidden="true">
+          <svg viewBox="0 0 48 48"><path d="M10 9h28v30H10z"/><path d="M17 18h14M17 24h14M17 30h9"/></svg>
+        </div>
+        <p class="eyebrow">Private, browser-based analytics</p>
+        <h2 id="upload-title">Turn survey responses into clear insights</h2>
+        <p>Start with an Excel or CSV file, or connect a public Google Sheet. No account or backend is required.</p>
+      </div>
+
+      <div class="source-cards">
+        <article class="source-card source-card-primary">
+          <div class="source-card-heading">
+            <span class="card-icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M12 16V4m0 0L7 9m5-5 5 5M5 15v4h14v-4"/></svg>
+            </span>
+            <div><h3>Upload a file</h3><p>Excel or CSV</p></div>
+          </div>
+          <label class="file-drop" id="fileDrop">
+            <span class="drop-illustration" aria-hidden="true">
+              <svg viewBox="0 0 40 40"><path d="M8 7h18l6 6v20H8z"/><path d="M26 7v7h6M20 27V16m0 0-4 4m4-4 4 4"/></svg>
+            </span>
+            <strong>Drop your file here</strong>
+            <span>or</span>
+            <span class="primary-btn choose-file-visual">Choose file</span>
+            <small>.xlsx, .xls, or .csv</small>
+            <input id="fileInput" type="file" accept=".xlsx,.xls,.csv" aria-label="Choose an Excel or CSV file">
+          </label>
+        </article>
+
+        <article class="source-card">
+          <div class="source-card-heading">
+            <span class="card-icon card-icon-sheet" aria-hidden="true">
+              <svg viewBox="0 0 24 24"><path d="M6 3h9l4 4v14H6z"/><path d="M15 3v5h4M9 12h7M9 16h7"/></svg>
+            </span>
+            <div><h3>Connect Google Sheet</h3><p>Public links only</p></div>
+          </div>
+          <label class="field public-url-field">
+            <span>Public Google Sheet link</span>
+            <input id="publicSheetUrl" type="url" placeholder="https://docs.google.com/spreadsheets/d/..." autocomplete="url">
+          </label>
+          <button id="loadPublicSheetBtn" class="secondary-btn full-btn" type="button">Load Google Sheet</button>
+          <p class="source-help">The sheet must be shared publicly or with anyone who has the link.</p>
+        </article>
+      </div>
+
+      <div class="privacy-note">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5 16 5v4.5c0 3.8-2.5 6.5-6 8-3.5-1.5-6-4.2-6-8V5z"/><path d="m7 10 2 2 4-4"/></svg>
+        <span>Your files are processed locally in your browser and are not uploaded to a server.</span>
+      </div>
+      <div id="statusMessage" class="status-message" role="status" aria-live="polite"></div>
+
+      <div id="emptyState" class="empty-state">
+        <div>
+          <h3>No dataset loaded</h3>
+          <p>Choose a source above to start exploring your survey responses.</p>
+        </div>
+        <button id="sampleDataBtn" class="text-btn" type="button">Try sample data</button>
+      </div>
+    </section>
+
+    <section id="fileDetails" class="dataset-bar hidden" aria-label="Active dataset summary">
+      <div class="dataset-identity">
+        <span class="dataset-dot" aria-hidden="true"></span>
+        <div><span>Active dataset</span><strong id="datasetFileName">—</strong></div>
+      </div>
+      <div id="fileStats" class="dataset-stats"></div>
+      <div class="dataset-actions">
+        <label id="sheetPickerWrap" class="field compact hidden">
+          <span class="sr-only">Selected sheet</span>
+          <select id="sheetSelect" aria-label="Selected sheet"></select>
+        </label>
+        <button id="changeSheetBtn" class="ghost-btn" type="button">Change sheet</button>
+        <button id="replaceFileBtn" class="ghost-btn" type="button">Replace file</button>
+        <button id="clearDataBtn" class="ghost-btn danger-text" type="button">Clear data</button>
+      </div>
+    </section>
+
+    <section id="linkedSurveyPanel" class="linked-survey-panel hidden" aria-labelledby="linked-survey-title">
+      <div class="linked-survey-heading">
+        <div>
+          <p class="eyebrow">Optional linked analysis</p>
+          <h2 id="linked-survey-title">Link a secondary survey</h2>
+          <p>Match this survey to another survey and use one of its questions as a breakdown across charts and reports.</p>
+        </div>
+        <div class="linked-survey-heading-actions"><span id="linkHeadlineStatus" class="link-headline-status hidden"></span><button id="toggleLinkedSurveyBtn" class="secondary-btn" type="button" aria-expanded="false">Set up link</button></div>
+      </div>
+      <div id="linkedSurveySetup" class="linked-survey-setup hidden">
+        <div class="link-workflow-grid">
+          <div class="link-step-card">
+            <div class="step-label"><span>1</span><div><strong>Primary survey</strong><small>The active dataset and sheet</small></div></div>
+            <div class="link-primary-summary"><strong id="linkPrimaryName">—</strong><span id="linkPrimarySheet">—</span></div>
+            <label class="field"><span>Primary matching field</span><select id="linkPrimaryField"></select></label>
+          </div>
+          <div class="link-step-card">
+            <div class="step-label"><span>2</span><div><strong>Secondary survey</strong><small>Another sheet or a separate file</small></div></div>
+            <label class="field"><span>Secondary source</span><select id="linkSecondarySource"><option value="workbook">Another sheet in the primary workbook</option><option value="file">Upload a separate survey file</option></select></label>
+            <label id="linkSecondaryFileWrap" class="field hidden"><span>Secondary file</span><input id="linkSecondaryFile" type="file" accept=".xlsx,.xls,.csv"></label>
+            <div id="linkSecondaryFileName" class="column-note"></div>
+            <label class="field"><span>Secondary sheet</span><select id="linkSecondarySheet"></select></label>
+            <label class="field"><span>Secondary matching field</span><select id="linkSecondaryField"></select></label>
+          </div>
+          <div class="link-step-card">
+            <div class="step-label"><span>3</span><div><strong>Disaggregation</strong><small>Choose any secondary question</small></div></div>
+            <label class="field"><span>Secondary question</span><select id="linkQuestion"><option value="">Select after matching</option></select></label>
+            <p class="column-note">Multi-select answers are expanded so each matched response appears in every selected category.</p>
+            <div class="link-actions"><button id="createSurveyLinkBtn" class="primary-btn" type="button">Match surveys</button><button id="clearSurveyLinkBtn" class="ghost-btn danger-text hidden" type="button">Remove link</button></div>
+          </div>
+        </div>
+        <div id="linkValidation" class="status-message" role="status" aria-live="polite"></div>
+        <div id="linkStatusSummary" class="link-status-summary hidden" aria-label="Survey matching status"></div>
+        <div id="linkWarnings" class="link-warnings hidden"></div>
+        <div id="linkDiagnosticActions" class="link-diagnostic-actions hidden">
+          <button id="viewUnmatchedBtn" class="secondary-btn" type="button">View unmatched records</button>
+          <button id="downloadUnmatchedBtn" class="secondary-btn" type="button">Download unmatched CSV</button>
+          <button id="viewDuplicatesBtn" class="secondary-btn" type="button">View duplicate values</button>
+        </div>
+      </div>
+    </section>
+
+    <nav id="mainTabs" class="main-tabs hidden" aria-label="Analysis views" role="tablist">
+      <button id="chartsTab" class="tab-button is-active" type="button" role="tab" aria-selected="true" aria-controls="dashboardSection" data-tab="charts">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 17V9h4v8M8 17V3h4v14M13 17v-6h4v6"/></svg>Charts
+      </button>
+      <button id="reportTab" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="distributionSection" data-tab="report">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M4 3h12v14H4zM7 7h6M7 10h6M7 13h4"/></svg>Breakdown Report
+      </button>
+      <button id="previewTab" class="tab-button" type="button" role="tab" aria-selected="false" aria-controls="dataPreviewSection" data-tab="preview">
+        <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M3 4h14v12H3zM3 8h14M8 4v12"/></svg>Data Preview
+      </button>
+    </nav>
+
+    <section id="dashboardSection" class="tab-panel dashboard-section hidden" role="tabpanel" aria-labelledby="chartsTab">
+      <div class="section-heading dashboard-heading">
+        <div>
+          <p class="eyebrow">Chart workspace</p>
+          <h2 id="dashboard-title">Eligible Charts</h2>
+          <p id="dashboardHint">Choose the survey columns you want to generate, then configure each chart below.</p>
+          <p id="chartEligibilityHint" class="dashboard-rule-note"></p>
+        </div>
+        <div class="dashboard-actions">
+          <button id="generateSelectedChartsBtn" class="primary-btn" type="button">Generate Selected Charts</button>
+          <button id="addChartBtn" class="primary-btn" type="button">+ Add chart</button>
+        </div>
+      </div>
+      <section class="chart-selection-panel" aria-labelledby="chart-selection-title">
+        <div class="chart-selection-heading">
+          <div>
+            <h3 id="chart-selection-title">Choose chart columns</h3>
+            <p>Select one or more response columns. Existing charts are not duplicated.</p>
+          </div>
+          <label class="select-all-charts">
+            <input id="selectAllCharts" type="checkbox" aria-controls="chartColumnChecklist">
+            <span>Select all</span>
+          </label>
+        </div>
+        <div id="chartColumnChecklist" class="chart-column-checklist" role="group" aria-label="Selectable chart columns"></div>
+        <div class="selection-count-row"><strong id="selectedChartCount">0 charts selected</strong></div>
+        <div id="chartGenerationStatus" class="status-message" role="status" aria-live="polite"></div>
+      </section>
+      <div id="chartGrid" class="chart-grid"></div>
+    </section>
+
+    <section id="distributionSection" class="tab-panel distribution-section hidden" role="tabpanel" aria-labelledby="reportTab">
+      <div class="section-heading dashboard-heading">
+        <div>
+          <p class="eyebrow">Excel-style analysis</p>
+          <h2 id="distribution-title">Question Breakdown Report</h2>
+          <p>Create an Excel-style report showing counts and percentages for selected survey questions.</p>
+        </div>
+        <div class="report-source-compact">
+          <label class="field compact">
+            <span>Source</span>
+            <select id="reportSourceSelect" aria-label="Report source"></select>
+          </label>
+        </div>
+      </div>
+
+      <div id="reportStatus" class="status-message" role="status" aria-live="polite"></div>
+      <div class="report-builder">
+        <aside class="report-settings-panel" aria-label="Report settings">
+          <div class="step-label"><span>1</span><div><strong>Select questions</strong><small>Choose what to include</small></div></div>
+          <label class="search-field">
+            <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5"/><path d="m13 13 4 4"/></svg>
+            <span class="sr-only">Search questions</span>
+            <input id="reportQuestionSearch" type="search" placeholder="Search questions">
+          </label>
+          <div class="checklist-toolbar">
+            <button id="selectAllQuestionsBtn" class="text-btn" type="button">Select all</button>
+            <button id="selectMultipleChoiceBtn" class="text-btn" type="button">Multiple choice</button>
+            <button id="clearQuestionsBtn" class="text-btn" type="button">Clear all</button>
+          </div>
+          <div id="questionChecklist" class="checklist-box tall"></div>
+          <div class="selection-count-row"><strong id="selectedQuestionCount">0 questions selected</strong></div>
+          <div id="reportColumnNote" class="column-note"></div>
+
+          <div class="settings-divider"></div>
+          <div class="step-label"><span>2</span><div><strong>Configure report</strong><small>Optional breakdown and filter</small></div></div>
+          <label class="field">
+            <span>Report name</span>
+            <input id="reportNameInput" type="text" placeholder="Question breakdown">
+          </label>
+          <label class="field">
+            <span>Data sheet</span>
+            <select id="reportDataSheetSelect"></select>
+          </label>
+          <label class="field report-breakdown-field">
+            <span>Break down by</span>
+            <select id="primaryBreakdownSelect"></select>
+          </label>
+          <div class="field">
+            <span>Filter report by</span>
+            <select id="reportFilterColumnSelect"></select>
+            <div id="reportFilterValues" class="checklist-box report-filter-values hidden"></div>
+            <div id="reportFilterNote" class="column-note"></div>
+          </div>
+          <button id="generateReportBtn" class="primary-btn full-btn" type="button">Generate breakdown report</button>
+        </aside>
+
+        <div class="report-output-panel">
+          <div class="report-toolbar" aria-label="Report display and export tools">
+            <div class="segmented-control" role="group" aria-label="Report values">
+              <button type="button" data-report-mode="count">Count</button>
+              <button type="button" data-report-mode="percentage">Percentage</button>
+              <button class="is-active" type="button" data-report-mode="both">Count + Percentage</button>
+            </div>
+            <div class="toolbar-spacer"></div>
+            <div class="segmented-control density-control" role="group" aria-label="Table density">
+              <button class="is-active" type="button" data-density="compact">Compact</button>
+              <button type="button" data-density="comfortable">Comfortable</button>
+            </div>
+            <div class="zoom-control" role="group" aria-label="Report zoom">
+              <button id="zoomOutBtn" class="icon-btn" type="button" title="Zoom out" aria-label="Zoom out">−</button>
+              <span id="zoomValue">100%</span>
+              <button id="zoomInBtn" class="icon-btn" type="button" title="Zoom in" aria-label="Zoom in">+</button>
+            </div>
+            <button id="fullscreenReportBtn" class="icon-btn" type="button" title="Full-screen preview" aria-label="Full-screen report preview">⛶</button>
+            <button id="downloadReportCsvBtn" class="secondary-btn" type="button">Download CSV</button>
+            <button id="downloadReportXlsxBtn" class="primary-btn" type="button">Download Excel</button>
+          </div>
+          <div class="report-summary-bar">
+            <div><strong id="reportOutputTitle">No report generated yet</strong><span id="reportOutputMeta">Select questions and generate a breakdown report.</span></div>
+          </div>
+          <div id="reportContextBar" class="report-context-bar hidden"></div>
+          <div id="distributionOutput" class="table-wrap distribution-output report-mode-both density-compact">
+            <div class="report-empty"><span class="empty-state-icon" aria-hidden="true">▦</span><strong>Select questions and generate a breakdown report.</strong><span>Your report preview will appear here.</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="dataPreviewSection" class="tab-panel data-preview-section hidden" role="tabpanel" aria-labelledby="previewTab">
+      <div class="section-heading dashboard-heading">
+        <div>
+          <p class="eyebrow">Dataset quality</p>
+          <h2>Data Preview</h2>
+          <p>Review the first 100 rows and control which columns are available for analysis.</p>
+        </div>
+        <label class="search-field preview-search">
+          <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5"/><path d="m13 13 4 4"/></svg>
+          <span class="sr-only">Search preview rows</span>
+          <input id="previewSearch" type="search" placeholder="Search rows">
+        </label>
+      </div>
+      <div id="previewStats" class="preview-stats"></div>
+      <div class="preview-layout">
+        <aside class="column-profile-panel">
+          <div class="panel-heading"><div><h3>Columns</h3><p>Hide columns from analysis without changing the source.</p></div></div>
+          <div id="columnProfiles" class="column-profiles"></div>
+        </aside>
+        <div class="preview-table-panel">
+          <div class="table-result-bar"><span id="previewResultCount">Showing 0 rows</span><span>First 100 rows maximum</span></div>
+          <div id="dataPreviewTable" class="table-wrap data-preview-table"></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <div id="toastRegion" class="toast-region" aria-live="polite" aria-atomic="true"></div>
+
+  <dialog id="confirmDialog" class="confirm-dialog">
+    <form method="dialog">
+      <div class="dialog-icon" aria-hidden="true">!</div>
+      <h2 id="confirmTitle">Confirm action</h2>
+      <p id="confirmMessage"></p>
+      <div class="dialog-actions">
+        <button class="secondary-btn" value="cancel">Cancel</button>
+        <button id="confirmActionBtn" class="danger-btn" value="confirm">Confirm</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="linkDetailsDialog" class="link-details-dialog">
+    <div class="link-details-shell">
+      <div class="link-details-heading"><div><p class="eyebrow">Match diagnostics</p><h2 id="linkDetailsTitle">Linked survey details</h2></div><button id="closeLinkDetailsBtn" class="icon-btn" type="button" aria-label="Close details">×</button></div>
+      <div id="linkDetailsBody" class="table-wrap link-details-body"></div>
+    </div>
+  </dialog>
+
+  <template id="chartCardTemplate">
+    <article class="chart-card">
+      <header class="chart-card-header">
+        <div class="chart-title-wrap">
+          <div class="chart-title-row">
+            <h3 class="chart-title">Chart</h3>
+            <button class="icon-btn edit-title" type="button" title="Edit chart title" aria-label="Edit chart title">✎</button>
+          </div>
+          <input class="chart-title-input hidden" type="text" aria-label="Chart title">
+          <div class="chart-meta"><span class="valid-response-count">0 valid responses</span><span class="category-count">0 categories</span><span class="analysis-summary">No filters</span></div>
+        </div>
+        <div class="icon-actions">
+          <label class="chart-type-quick" title="Choose how this chart is displayed">
+            <span>View</span>
+            <select class="chart-type" aria-label="Chart type">
+              <option value="auto">Auto</option>
+              <option value="horizontalBar">Horizontal bar</option>
+              <option value="bar">Vertical bar</option>
+              <option value="pie">Pie</option>
+              <option value="doughnut">Doughnut</option>
+              <option value="line">Line</option>
+              <option value="table">Table only</option>
+            </select>
+          </label>
+          <button class="icon-btn duplicate-chart" type="button" title="Duplicate chart" aria-label="Duplicate chart">⧉</button>
+          <button class="icon-btn collapse-chart" type="button" title="Collapse chart" aria-label="Collapse chart">−</button>
+          <details class="menu-details chart-more-menu">
+            <summary class="icon-btn" title="More chart options" aria-label="More chart options">•••</summary>
+            <div class="menu-popover menu-popover-right">
+              <button class="expand-chart" type="button">Expanded view</button>
+              <button class="delete-chart danger-text" type="button">Delete chart</button>
+            </div>
+          </details>
+        </div>
+      </header>
+
+      <div class="chart-card-body">
+        <div class="chart-workspace">
+          <aside class="settings-panel">
+            <div class="settings-panel-heading">
+              <strong>Chart settings</strong>
+              <button class="icon-btn toggle-settings" type="button" title="Collapse settings" aria-label="Collapse settings">‹</button>
+            </div>
+            <div class="settings-content">
+              <div class="workflow-step">
+                <div class="step-label"><span>1</span><div><strong>Choose question</strong><small>Select a survey column</small></div></div>
+                <label class="search-field question-search-field">
+                  <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5"/><path d="m13 13 4 4"/></svg>
+                  <span class="sr-only">Search survey questions</span>
+                  <input class="question-search" type="search" placeholder="Search questions">
+                </label>
+                <label class="field">
+                  <span>Survey question</span>
+                  <select class="primary-column"></select>
+                </label>
+                <div class="question-detail"></div>
+              </div>
+
+              <div class="workflow-step">
+                <div class="step-label"><span>2</span><div><strong>Configure analysis</strong><small>Choose how to display results</small></div></div>
+                <label class="field">
+                  <span>Compare by</span>
+                  <select class="compare-column"></select>
+                </label>
+                <small class="field-help">For stacked charts, choose a comparison column, then select Stacked bar chart below.</small>
+                <label class="field compare-setting hidden">
+                  <span>Comparison view</span>
+                  <select class="compare-type">
+                    <option value="grouped">Grouped bar chart</option>
+                    <option value="stacked">Stacked bar chart</option>
+                    <option value="stacked100">100% stacked bar chart</option>
+                    <option value="table">Comparison table</option>
+                  </select>
+                </label>
+                <label class="field compare-setting hidden">
+                  <span>Display values as</span>
+                  <select class="compare-value-mode">
+                    <option value="counts">Raw counts</option>
+                    <option value="primaryPercent">% within primary response</option>
+                    <option value="comparePercent">% within comparison group</option>
+                    <option value="totalPercent">% of total dataset</option>
+                  </select>
+                </label>
+
+                <details class="advanced-controls">
+                  <summary>Advanced controls</summary>
+                  <div class="advanced-content">
+                    <label class="field single-setting"><span>Sort responses</span><select class="sort-mode"><option value="desc">Highest to lowest</option><option value="asc">Lowest to highest</option><option value="alpha">Alphabetically</option></select></label>
+                    <label class="field single-setting"><span>Show responses</span><select class="top-mode"><option value="15">Top 15</option><option value="10">Top 10</option><option value="5">Top 5</option></select></label>
+                    <div class="toggle-row single-setting"><label><input class="show-counts" type="checkbox" checked> Show count</label><label><input class="show-percentages" type="checkbox" checked> Show percentage</label></div>
+                    <div class="toggle-row"><label><input class="include-blanks" type="checkbox" checked> Include blank / no response</label></div>
+                  </div>
+                </details>
+              </div>
+
+              <section class="filter-panel" aria-label="Chart filters">
+                <div class="filter-header"><div><h3>Filters</h3><p class="row-count">Showing 0 of 0 rows</p></div><button class="text-btn clear-filters" type="button">Clear all</button></div>
+                <div class="filters-list"></div>
+              </section>
+            </div>
+          </aside>
+
+          <div class="output-panel">
+            <div class="chart-action-bar">
+              <button class="secondary-btn add-filter" type="button">+ Add filter</button>
+              <button class="secondary-btn compare-action" type="button">Compare</button>
+              <details class="menu-details response-menu">
+                <summary class="secondary-btn">Edit responses</summary>
+                <div class="menu-popover">
+                  <button class="show-response-editor" type="button">Hide responses</button>
+                  <button class="show-response-editor" type="button">Merge similar responses</button>
+                  <button class="reset-responses" type="button">Restore original responses</button>
+                </div>
+              </details>
+              <details class="menu-details export-menu">
+                <summary class="primary-btn">Export</summary>
+                <div class="menu-popover menu-popover-right">
+                  <button class="export-png" type="button">Download PNG</button>
+                  <button class="export-summary" type="button">Download summary CSV</button>
+                  <button class="export-filtered" type="button">Download filtered data CSV</button>
+                </div>
+              </details>
+            </div>
+            <div class="active-filters" aria-label="Active filters"></div>
+            <div class="chart-area">
+              <canvas></canvas>
+              <div class="chart-empty hidden">Choose a survey question to generate a chart.</div>
+            </div>
+            <section class="response-tools hidden" aria-label="Response management">
+              <div class="section-heading compact-heading"><div><h3>Edit responses</h3><p>Select table rows, then hide or combine them.</p></div><button class="icon-btn close-response-editor" type="button" aria-label="Close response editor">×</button></div>
+              <div class="merge-row"><input class="merge-name" type="text" placeholder="Combined response name" aria-label="Combined response name"><button class="secondary-btn merge-selected" type="button">Merge selected</button><button class="secondary-btn hide-selected" type="button">Hide selected</button></div>
+            </section>
+            <div class="result-heading"><div><h3>Summary table</h3><p>Counts and percentages for the current view.</p></div><input class="summary-search" type="search" placeholder="Search responses" aria-label="Search response summary"></div>
+            <div class="table-note"></div>
+            <div class="table-wrap summary-table"></div>
+          </div>
+        </div>
+      </div>
+    </article>
+  </template>
+
+  <template id="filterTemplate">
+    <div class="filter-card">
+      <div class="filter-top">
+        <label class="field"><span>Filter column</span><select class="filter-column"></select></label>
+        <button class="icon-btn danger remove-filter" type="button" title="Remove filter" aria-label="Remove filter">×</button>
+      </div>
+      <input class="filter-search" type="search" placeholder="Search filter values" aria-label="Search filter values">
+      <div class="filter-values"></div>
+    </div>
+  </template>
+
+  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
+  <script src="chart-rules.js?v=20260908-1"></script>
+  <script src="data-dictionary.js?v=20260904-2"></script>
+  <script src="linked-survey.js?v=20260904-1"></script>
+  <script src="script.js?v=20260908-2"></script>
+</body>
+</html>
