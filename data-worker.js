@@ -1,6 +1,7 @@
 'use strict';
 
-importScripts('https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js');
+// Keep parsing offline and deterministic. The build copies vendor/ recursively.
+importScripts('vendor/xlsx.full.min.js');
 
 self.onmessage = event => {
   try {
@@ -11,9 +12,6 @@ self.onmessage = event => {
     });
     self.postMessage({ type: 'success', workbook });
   } catch (error) {
-    self.postMessage({
-      type: 'error',
-      message: error?.message || 'The workbook could not be parsed.'
-    });
+    self.postMessage({ type: 'error', message: `Workbook parse failed: ${error?.message || 'The workbook could not be parsed.'}` });
   }
 };

@@ -3,3 +3,7 @@
 *.csv
 dist/
 *.tgz
+
+node_modules/
+.env
+.env.*

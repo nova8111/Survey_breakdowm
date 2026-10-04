@@ -1,51 +1,45 @@
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { join, relative, sep } from 'node:path';
 
-const files = {
-  '/': { source: 'index.html', contentType: 'text/html; charset=utf-8' },
-  '/index.html': { source: 'index.html', contentType: 'text/html; charset=utf-8' },
-  '/style.css': { source: 'style.css', contentType: 'text/css; charset=utf-8' },
-  '/chart-rules.js': { source: 'chart-rules.js', contentType: 'application/javascript; charset=utf-8' },
-  '/data-dictionary.js': { source: 'data-dictionary.js', contentType: 'application/javascript; charset=utf-8' },
-  '/linked-survey.js': { source: 'linked-survey.js', contentType: 'application/javascript; charset=utf-8' },
-  '/script.js': { source: 'script.js', contentType: 'application/javascript; charset=utf-8' },
-  '/data-worker.js': { source: 'data-worker.js', contentType: 'application/javascript; charset=utf-8' }
+const distRoot = 'dist';
+const routePrefix = '/Survey_breakdowm';
+const mime = {
+  '.html': 'text/html; charset=utf-8', '.css': 'text/css; charset=utf-8', '.js': 'application/javascript; charset=utf-8',
+  '.json': 'application/json; charset=utf-8', '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.svg': 'image/svg+xml',
+  '.woff': 'font/woff', '.woff2': 'font/woff2'
 };
-
-await rm('dist', { recursive: true, force: true });
-await mkdir('dist/server', { recursive: true });
-
-const assetEntries = await Promise.all(
-  Object.entries(files).map(async ([route, asset]) => {
-    const content = await readFile(asset.source, 'utf8');
-    return [route, { content, contentType: asset.contentType }];
-  })
-);
-
-const worker = `const assets = new Map(${JSON.stringify(assetEntries)});
-
-function notFound() {
-  return new Response('Not found', {
-    status: 404,
-    headers: { 'content-type': 'text/plain; charset=utf-8' }
-  });
-}
-
-export default {
-  async fetch(request) {
-    const url = new URL(request.url);
-    const pathname = url.pathname.endsWith('/') && url.pathname !== '/' ? url.pathname.slice(0, -1) : url.pathname;
-    const asset = assets.get(pathname);
-
-    if (!asset) return notFound();
-
-    return new Response(asset.content, {
-      headers: {
-        'content-type': asset.contentType,
-        'cache-control': 'no-store'
-      }
-    });
+async function walk(directory) {
+  const entries = await readdir(directory, { withFileTypes: true });
+  const files = [];
+  for (const entry of entries) {
+    const source = join(directory, entry.name);
+    if (entry.isDirectory()) files.push(...await walk(source));
+    else files.push(source);
   }
-};
-`;
-
-await writeFile('dist/server/index.js', worker);
+  return files;
+}
+const required = ['index.html', 'style.css', 'chart-rules.js', 'data-dictionary.js', 'linked-survey.js', 'script.js', 'data-io.js', 'survey-core.js', 'report-worker.js', 'data-worker.js'];
+const sources = [];
+for (const file of required) { await readFile(file); sources.push(file); }
+for (const directory of ['assets', 'vendor']) { try { sources.push(...await walk(directory)); } catch { /* optional */ } }
+await rm(distRoot, { recursive: true, force: true });
+await mkdir(join(distRoot, 'server'), { recursive: true });
+const assetEntries = [];
+for (const source of sources) {
+  const route = `/${relative('.', source).split(sep).join('/')}`;
+  const content = await readFile(source);
+  const extension = route.slice(route.lastIndexOf('.')).toLowerCase();
+  const entry = { content: content.toString('base64'), contentType: mime[extension] || 'application/octet-stream' };
+  const target = join(distRoot, route.slice(1).replaceAll('/', sep));
+  await mkdir(join(target, '..'), { recursive: true });
+  await writeFile(target, content);
+  assetEntries.push([route, entry]);
+  if (route === '/index.html') assetEntries.push(['/', entry]);
+}
+const prefixed = assetEntries.map(([route, value]) => [`${routePrefix}${route === '/' ? '' : route}`, value]);
+const allEntries = [...assetEntries, ...prefixed];
+const worker = `const assets = new Map(${JSON.stringify(allEntries)});
+function decodeBase64(value) { const raw = atob(value); const bytes = new Uint8Array(raw.length); for (let i = 0; i < raw.length; i += 1) bytes[i] = raw.charCodeAt(i); return bytes; }
+function notFound() { return new Response('Not found', { status: 404, headers: { 'content-type': 'text/plain; charset=utf-8' } }); }
+export default { async fetch(request) { const url = new URL(request.url); const pathname = url.pathname.replace(/\\/+$/, '') || '/'; const asset = assets.get(pathname) || assets.get(pathname + '/'); if (!asset) return notFound(); return new Response(decodeBase64(asset.content), { headers: { 'content-type': asset.contentType, 'cache-control': 'no-store', 'content-security-policy': "default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://docs.google.com https://*.googleusercontent.com;" } }); } };\n`;
+await writeFile(join(distRoot, 'server', 'index.js'), worker, 'utf8');
