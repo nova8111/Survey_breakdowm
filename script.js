@@ -1,7 +1,13 @@
 (function () {
   'use strict';
 
-  const NO_RESPONSE = 'No Response';
+  const missingLibraries = ['XLSX', 'Chart', 'ChartDataLabels', 'ChartRules', 'DataDictionary', 'LinkedSurvey', 'SurveyCore', 'DataIO'].filter(name => !globalThis[name]);
+  if (missingLibraries.length) {
+    document.getElementById('statusMessage').textContent = 'The analyzer could not start. Refresh the page or check that all application files are available.';
+    document.querySelectorAll('button, input, select').forEach(control => { control.disabled = true; });
+    return;
+  }
+  const NO_RESPONSE = '(No response)';
   const TABLE_ROW_LIMIT = 10;
   const CHART_RESPONSE_DISPLAY_LIMIT = ChartRules.DEFAULT_MAX_UNIQUE_VALUES;
   const REPORT_UNIQUE_VALUE_LIMIT = 15;
@@ -16,6 +22,17 @@
   const CHART_GRID = rootStyles.getPropertyValue('--chart-grid').trim();
   const CHART_ON_COLOR = rootStyles.getPropertyValue('--chart-on-color').trim();
   const sheetMatrixCache = new WeakMap();
+  const sheetRowIndexCache = new WeakMap();
+  const sheetWorkspaces = new WeakMap();
+  const reportConfigs = new Map();
+  let additionalReportFilters = [];
+  let reportContextKey = '';
+  let loadOperation = 0;
+  let secondaryLoadOperation = 0;
+  let reportOperation = 0;
+  let activeReportWorker = null;
+  let cancelReportWork = null;
+  let activeLoadController = null;
   const sheetHeaderCache = new WeakMap();
   const sheetRecordsCache = new WeakMap();
   const workbookDictionaryCache = new WeakMap();
@@ -69,6 +86,9 @@
     nextChartNumber: 1,
     sources: [],
     reportResult: null,
+    reportStale: false,
+    reportMode: 'both',
+    responseDelimiter: 'semicolon',
     activeTab: 'charts',
     previewSearch: '',
     reportZoom: 1,
@@ -84,6 +104,15 @@
   };
 
   const els = {
+    reportFreshness: document.getElementById('reportFreshness'),
+    includeLargeReportColumns: document.getElementById('includeLargeReportColumns'),
+    responseDelimiter: document.getElementById('responseDelimiter'),
+    linkMatchMode: document.getElementById('linkMatchMode'),
+    linkDelimiter: document.getElementById('linkDelimiter'),
+    previewSheetSelect: document.getElementById('previewSheetSelect'),
+    chartLinkShortcut: document.getElementById('chartLinkShortcut'),
+    reportExportMode: document.getElementById('reportExportMode'),
+    selectVisibleQuestionsBtn: document.getElementById('selectVisibleQuestionsBtn'),
     fileInput: document.getElementById('fileInput'),
     fileDrop: document.getElementById('fileDrop'),
     uploadPanel: document.getElementById('uploadPanel'),
@@ -117,7 +146,6 @@
     reportStatus: document.getElementById('reportStatus'),
     reportQuestionSearch: document.getElementById('reportQuestionSearch'),
     selectAllQuestionsBtn: document.getElementById('selectAllQuestionsBtn'),
-    selectMultipleChoiceBtn: document.getElementById('selectMultipleChoiceBtn'),
     clearQuestionsBtn: document.getElementById('clearQuestionsBtn'),
     selectedQuestionCount: document.getElementById('selectedQuestionCount'),
     reportNameInput: document.getElementById('reportNameInput'),
@@ -128,6 +156,10 @@
     reportFilterColumnSelect: document.getElementById('reportFilterColumnSelect'),
     reportFilterValues: document.getElementById('reportFilterValues'),
     reportFilterNote: document.getElementById('reportFilterNote'),
+    reportFilterTools: document.getElementById('reportFilterTools'),
+    reportFilterSearch: document.getElementById('reportFilterSearch'),
+    additionalReportFilters: document.getElementById('additionalReportFilters'),
+    addReportFilterBtn: document.getElementById('addReportFilterBtn'),
     generateReportBtn: document.getElementById('generateReportBtn'),
     downloadReportCsvBtn: document.getElementById('downloadReportCsvBtn'),
     downloadReportXlsxBtn: document.getElementById('downloadReportXlsxBtn'),
@@ -192,10 +224,16 @@
     renderChartSelection();
   });
   els.loadPublicSheetBtn.addEventListener('click', loadPublicGoogleSheet);
-  els.reportSourceSelect.addEventListener('change', renderReportControls);
-  els.reportDataSheetSelect.addEventListener('change', renderReportColumns);
+  els.reportSourceSelect.addEventListener('change', () => { saveReportConfig(); resetLinkedSurveyMatch(); updateAnalysisColumns(); renderAllCharts(); markReportStale(); renderReportControls(); renderLinkedSurveyPanel(); });
+  els.reportDataSheetSelect.addEventListener('change', () => { saveReportConfig(); resetLinkedSurveyMatch(); updateAnalysisColumns(); renderAllCharts(); markReportStale(); renderReportColumns(); renderLinkedSurveyPanel(); renderFileStats(); });
   els.primaryBreakdownSelect.addEventListener('change', syncBreakdownQuestionSelection);
-  els.reportFilterColumnSelect.addEventListener('change', renderReportFilterValues);
+  els.reportFilterColumnSelect.addEventListener('change', () => renderReportFilterValues());
+  els.reportFilterSearch.addEventListener('input', () => searchChecklist(els.reportFilterValues, els.reportFilterSearch.value));
+  ['selectFilterValuesBtn', 'clearFilterValuesBtn'].forEach((id, index) => document.getElementById(id).addEventListener('click', () => {
+    els.reportFilterValues.querySelectorAll('input[type=checkbox]').forEach(input => { input.checked = index === 0; });
+    updateReportFilterSelectionNote(); markReportStale(); saveReportConfig();
+  }));
+  els.addReportFilterBtn.addEventListener('click', () => { additionalReportFilters.push({ column: '', values: null }); renderAdditionalReportFilters(); });
   els.generateReportBtn.addEventListener('click', generateDistributionReport);
   els.downloadReportCsvBtn.addEventListener('click', downloadDistributionCsv);
   els.downloadReportXlsxBtn.addEventListener('click', downloadDistributionXlsx);
@@ -210,14 +248,21 @@
       showToast('Dataset cleared.');
     }
   });
-  els.tabButtons.forEach(button => button.addEventListener('click', () => setActiveTab(button.dataset.tab)));
+  els.tabButtons.forEach((button, index) => {
+    button.addEventListener('click', () => setActiveTab(button.dataset.tab));
+    button.addEventListener('keydown', event => {
+      const target = event.key === 'ArrowRight' ? (index + 1) % els.tabButtons.length : event.key === 'ArrowLeft' ? (index + els.tabButtons.length - 1) % els.tabButtons.length : event.key === 'Home' ? 0 : event.key === 'End' ? els.tabButtons.length - 1 : -1;
+      if (target < 0) return;
+      event.preventDefault(); setActiveTab(els.tabButtons[target].dataset.tab); els.tabButtons[target].focus();
+    });
+  });
   els.previewSearch.addEventListener('input', event => {
     state.previewSearch = event.target.value;
     renderDataPreview();
   });
   els.reportQuestionSearch.addEventListener('input', filterReportQuestions);
   els.selectAllQuestionsBtn.addEventListener('click', () => setVisibleReportQuestions(true));
-  els.selectMultipleChoiceBtn.addEventListener('click', () => setVisibleReportQuestions(true));
+  els.selectVisibleQuestionsBtn.addEventListener('click', () => setVisibleReportQuestions(true, true));
   els.clearQuestionsBtn.addEventListener('click', () => setVisibleReportQuestions(false));
   document.querySelectorAll('[data-report-mode]').forEach(button => button.addEventListener('click', () => setReportMode(button.dataset.reportMode)));
   document.querySelectorAll('[data-density]').forEach(button => button.addEventListener('click', () => setReportDensity(button.dataset.density)));
@@ -246,6 +291,33 @@
   els.downloadUnmatchedBtn.addEventListener('click', downloadUnmatchedRecords);
   els.viewDuplicatesBtn.addEventListener('click', showDuplicateValues);
   els.closeLinkDetailsBtn.addEventListener('click', () => els.linkDetailsDialog.close());
+  els.previewSheetSelect.addEventListener('change', () => loadSheet(els.previewSheetSelect.value));
+  els.chartLinkShortcut.addEventListener('click', () => {
+    saveReportConfig();
+    const source = state.sources.find(item => item.workbook === state.workbook);
+    if (source) els.reportSourceSelect.value = source.id;
+    renderReportControls();
+    els.reportDataSheetSelect.value = state.sheetName;
+    renderReportColumns();
+    setActiveTab('report');
+    if (els.linkedSurveySetup.classList.contains('hidden')) toggleLinkedSurveySetup();
+    els.linkPrimaryField.focus();
+  });
+  els.includeLargeReportColumns.addEventListener('change', () => { saveReportConfig(); markReportStale(); renderReportColumns(); });
+  els.responseDelimiter.addEventListener('change', () => {
+    state.responseDelimiter = els.responseDelimiter.value;
+    reportConfigs.clear(); additionalReportFilters = [];
+    markReportStale(); renderReportColumns();
+  });
+  [els.linkMatchMode, els.linkDelimiter].forEach(control => control.addEventListener('change', () => clearSurveyLink(false)));
+  document.querySelector('.report-settings-panel').addEventListener('change', event => {
+    if (event.target.closest('#linkedSurveyPanel')) return;
+    markReportStale(); saveReportConfig();
+  });
+  els.reportNameInput.addEventListener('input', () => markReportStale());
+  window.addEventListener('beforeunload', event => {
+    if (state.charts.length || state.reportResult) { event.preventDefault(); event.returnValue = ''; }
+  });
 
   ['dragenter', 'dragover'].forEach(type => els.fileDrop.addEventListener(type, event => {
     event.preventDefault();
@@ -273,134 +345,71 @@
   }
 
   function parseCsvWorkbook(buffer) {
-    const bytes = new Uint8Array(buffer);
-    const encoding = bytes[0] === 0xff && bytes[1] === 0xfe ? 'utf-16le'
-      : (bytes[0] === 0xfe && bytes[1] === 0xff ? 'utf-16be' : 'utf-8');
-    const text = new TextDecoder(encoding).decode(buffer).replace(/^\uFEFF/, '');
-    const rows = [];
-    let row = [];
-    let field = '';
-    let quoted = false;
-
-    for (let index = 0; index < text.length; index += 1) {
-      const character = text[index];
-      if (quoted) {
-        if (character === '"' && text[index + 1] === '"') {
-          field += '"';
-          index += 1;
-        } else if (character === '"') {
-          quoted = false;
-        } else {
-          field += character;
-        }
-      } else if (character === '"' && field === '') {
-        quoted = true;
-      } else if (character === ',') {
-        row.push(field);
-        field = '';
-      } else if (character === '\n' || character === '\r') {
-        if (character === '\r' && text[index + 1] === '\n') index += 1;
-        row.push(field);
-        if (row.some(value => value !== '')) rows.push(row);
-        row = [];
-        field = '';
-      } else {
-        field += character;
-      }
-    }
-
-    if (field || row.length) {
-      row.push(field);
-      if (row.some(value => value !== '')) rows.push(row);
-    }
-
+    const rows = DataIO.parseCsv(buffer);
     const workbook = XLSX.utils.book_new();
     XLSX.utils.book_append_sheet(workbook, XLSX.utils.aoa_to_sheet(rows), 'Sheet1');
     return workbook;
   }
 
   function parseWorkbook(buffer, extension = '') {
-    if (extension === 'csv') return Promise.resolve(parseCsvWorkbook(buffer));
-    if (typeof Worker === 'undefined') return Promise.resolve(XLSX.read(buffer, WORKBOOK_PARSE_OPTIONS));
-
+    if (extension === 'csv') return Promise.resolve().then(() => parseCsvWorkbook(buffer));
+    if (typeof Worker === 'undefined' || location.protocol === 'file:') return Promise.resolve().then(() => XLSX.read(buffer, WORKBOOK_PARSE_OPTIONS));
     return new Promise((resolve, reject) => {
+      let worker;
+      try { worker = new Worker('data-worker.js?v=20261004-1'); }
+      catch { resolve(XLSX.read(buffer, WORKBOOK_PARSE_OPTIONS)); return; }
+      const timer = window.setTimeout(() => finish(new Error('Reading the workbook timed out. Try a smaller file or CSV.')), 60000);
       let settled = false;
-      const worker = new Worker('data-worker.js?v=20260903-2');
-      const finish = callback => value => {
+      const finish = (error, workbook) => {
         if (settled) return;
         settled = true;
-        worker.terminate();
-        callback(value);
+        clearTimeout(timer); worker.terminate();
+        if (error) reject(error); else resolve(workbook);
       };
-      const fallbackToMainThread = finish(value => {
-        try {
-          resolve(XLSX.read(buffer, WORKBOOK_PARSE_OPTIONS));
-        } catch (error) {
-          reject(error);
-        }
-      });
-
-      worker.onmessage = event => {
-        if (event.data?.type === 'success') {
-          finish(resolve)(event.data.workbook);
-        } else {
-          fallbackToMainThread();
-        }
-      };
-      worker.onerror = fallbackToMainThread;
-
-      try {
-        const transferableBuffer = buffer.slice(0);
-        worker.postMessage({ buffer: transferableBuffer }, [transferableBuffer]);
-      } catch (error) {
-        fallbackToMainThread(error);
-      }
+      worker.onmessage = event => finish(event.data.type === 'success' ? null : new Error(event.data.message), event.data.workbook);
+      worker.onerror = () => finish(new Error('The workbook reader could not start. Reload the app and try again.'));
+      worker.postMessage({ buffer }, [buffer]);
     });
   }
 
   async function loadFile(file) {
-
     const extension = file.name.split('.').pop().toLowerCase();
-    if (!['xlsx', 'xls', 'csv'].includes(extension)) {
-      showStatus('Please choose an .xlsx, .xls, or .csv file.', 'error');
-      return;
-    }
-
-    showStatus('Reading your file...', 'loading');
+    if (!['xlsx', 'xls', 'csv'].includes(extension)) { showStatus('Please choose an .xlsx, .xls, or .csv file.', 'error'); return; }
+    const operation = ++loadOperation;
+    activeLoadController?.abort();
+    showStatus('Reading your file…', 'loading');
     setButtonLoading(els.replaceFileBtn, true, 'Reading…');
-    resetDataset();
-
     try {
-      const buffer = await file.arrayBuffer();
-      const workbook = await parseWorkbook(buffer, extension);
-      showStatus('Analyzing rows and columns...', 'loading');
+      const workbook = await parseWorkbook(await file.arrayBuffer(), extension);
+      if (operation !== loadOperation) return;
+      const sheetName = getSurveySheetNames(workbook.SheetNames).find(name => getSheetRecords(workbook, name).length);
+      if (!sheetName) throw new Error('No survey sheet with a header and response rows was found.');
       await yieldToBrowser();
-
-      if (!workbook.SheetNames.length) {
-        throw new Error('No sheets were found in this file.');
-      }
-
-      upsertReportSource(UPLOADED_SOURCE_ID, `Uploaded: ${file.name}`, workbook);
-      activateWorkbook(workbook, file.name, workbook.SheetNames[0]);
-
-      if (state.rows.length > 50000) {
-        showStatus('Large file warning: this app is designed for normal files up to about 50,000 rows. It may take longer to update charts.', 'warning');
-        showToast('Large dataset loaded. Some updates may take longer.', 'warning');
-      } else {
-        showStatus('File loaded. Your data stays in this browser.', '');
-        showToast(`${file.name} loaded successfully.`);
-      }
+      if (operation !== loadOperation) return;
+      resetDataset(false);
+      upsertReportSource(UPLOADED_SOURCE_ID, file.name, workbook);
+      activateWorkbook(workbook, file.name, sheetName);
+      showStatus(state.allRows.length > 50000 ? 'Large dataset loaded. Generate only the questions you need.' : 'File loaded. Uploaded data is processed in this browser.', state.allRows.length > 50000 ? 'warning' : '');
+      showToast(`${file.name} loaded successfully.`);
     } catch (error) {
-      console.error(error);
-      resetDataset();
-      showStatus('This file could not be opened. It may be damaged or in an unsupported format.', 'error');
-      showToast('The file could not be opened.', 'error');
+      if (operation !== loadOperation) return;
+      showStatus(`${error.message || 'The file could not be opened.'} Your current analysis has been kept.`, 'error');
+      showToast('The new file could not be opened. Your current analysis is unchanged.', 'error');
     } finally {
-      setButtonLoading(els.replaceFileBtn, false);
+      if (operation === loadOperation) setButtonLoading(els.replaceFileBtn, false);
+      els.fileInput.value = '';
     }
   }
 
   function activateWorkbook(workbook, fileName, sheetName) {
+    if (state.workbook !== workbook) {
+      state.charts.forEach(chart => { chart.chartInstance?.destroy(); chart.chartInstance = null; });
+      if (state.workbook && state.sheetName) {
+        if (!sheetWorkspaces.has(state.workbook)) sheetWorkspaces.set(state.workbook, new Map());
+        sheetWorkspaces.get(state.workbook).set(state.sheetName, { charts: state.charts, selected: state.selectedChartColumns, hidden: state.hiddenAnalysisColumns, next: state.nextChartNumber });
+      }
+      state.charts = []; state.sheetName = '';
+    }
     state.workbook = workbook;
     state.fileName = fileName;
     const surveySheets = getSurveySheetNames(workbook.SheetNames);
@@ -415,6 +424,16 @@
   }
 
   function loadSheet(sheetName) {
+    saveReportConfig();
+    if (!sheetWorkspaces.has(state.workbook)) sheetWorkspaces.set(state.workbook, new Map());
+    const workspaces = sheetWorkspaces.get(state.workbook);
+    if (state.sheetName) {
+      state.charts.forEach(chart => { chart.chartInstance?.destroy(); chart.chartInstance = null; });
+      workspaces.set(state.sheetName, { charts: state.charts, selected: state.selectedChartColumns, hidden: state.hiddenAnalysisColumns, next: state.nextChartNumber });
+    }
+    const restored = workspaces.get(sheetName);
+    state.charts = restored?.charts || [];
+    state.nextChartNumber = restored?.next || 1;
     const rawRows = getSheetMatrix(state.workbook, sheetName);
 
     state.sheetName = sheetName;
@@ -429,26 +448,12 @@
     state.excludedChartColumns = [];
     state.eligibleChartColumns = [];
     state.selectedChartColumns = new Set();
-    const hadLinkedSurvey = Boolean(state.linkedSurvey.result);
-    resetLinkedSurveyMatch();
-    if (hadLinkedSurvey) invalidateGeneratedReport();
 
-    if (!rawRows.length) {
-      renderDataset();
-      showStatus('The selected sheet does not contain usable rows.', 'warning');
-      return;
-    }
+    if (!rawRows.length) showStatus('This sheet is empty. Choose another sheet to continue.', 'warning');
 
-    const headerDetails = getSheetHeaderDetails(state.workbook, sheetName, 0);
+    const headerDetails = getSheetHeaderDetails(state.workbook, sheetName);
     const allColumns = headerDetails.columns;
-    const allRows = rawRows.slice(1)
-      .map(row => {
-        const record = {};
-        allColumns.forEach((column, index) => {
-          record[column] = row[index] === undefined ? '' : row[index];
-        });
-        return record;
-      });
+    const allRows = getSheetRecords(state.workbook, sheetName);
     const columnStats = buildColumnStats(allRows, allColumns);
     const chartColumns = ChartRules.getSelectableChartColumns(allColumns);
 
@@ -459,28 +464,22 @@
     state.allColumns = allColumns;
     state.columnOriginalHeaders = headerDetails.originalByColumn;
     state.allRows = allRows;
+    state.hiddenAnalysisColumns = restored?.hidden || new Set();
+    state.selectedChartColumns = restored?.selected || new Set();
     state.columnStats = columnStats;
     updateAnalysisColumns();
 
-    state.charts = [];
-    state.nextChartNumber = 1;
+    els.sheetSelect.value = sheetName;
+    if (rawRows.length) showStatus('File ready. Your data stays in this browser.', '');
     renderDataset();
-    if (state.columns.length && state.rows.length) setActiveTab('charts');
+    populateSelect(els.previewSheetSelect, getSurveySheetNames(state.workbook.SheetNames), sheetName, false);
   }
 
-  function makeUniqueHeaders(headerRow) {
-    const seen = new Map();
-    return headerRow.map((header, index) => {
-      const base = normalizeValue(header) || `Column ${index + 1}`;
-      const count = seen.get(base) || 0;
-      seen.set(base, count + 1);
-      return count ? `${base} (${count + 1})` : base;
-    });
-  }
+  function makeUniqueHeaders(headerRow) { return SurveyCore.uniqueHeaders(headerRow); }
 
   function renderDataset() {
     const hasData = state.rows.length > 0 && state.columns.length > 0;
-    const hasDataset = Boolean(state.workbook && state.allRows.length);
+    const hasDataset = Boolean(state.workbook);
     els.emptyState.classList.toggle('hidden', hasDataset);
     els.fileDetails.classList.toggle('hidden', !state.workbook);
     els.mainTabs.classList.toggle('hidden', !hasDataset);
@@ -504,19 +503,13 @@
 
   function renderFileStats() {
     if (!state.workbook) return;
-    els.datasetFileName.textContent = state.fileName;
-    const stats = [
-      ['Sheet', state.sheetName || 'None'],
-      ['Rows', formatNumber(state.allRows.length)],
-      ['Columns', formatNumber(state.rawColumnCount)],
-      ['Usable questions', formatNumber(state.columns.length)]
-    ];
-    els.fileStats.innerHTML = stats.map(([label, value]) => `
-      <div class="stat">
-        <span>${escapeHtml(label)}</span>
-        <strong>${escapeHtml(value)}</strong>
-      </div>
-    `).join('');
+    const source = state.activeTab === 'report' ? getSelectedReportSource() : null;
+    const sheetName = source ? els.reportDataSheetSelect.value : state.sheetName;
+    const rows = source && sheetName ? getSheetRecords(source.workbook, sheetName) : state.allRows;
+    const columns = source && sheetName ? getSheetColumns(source.workbook, sheetName) : state.allColumns;
+    els.datasetFileName.textContent = source?.name || state.fileName;
+    const stats = [[state.activeTab === 'report' ? 'Primary sheet' : 'Sheet', sheetName || 'None'], ['Rows', formatNumber(rows.length)], ['Columns', formatNumber(columns.length)]];
+    els.fileStats.innerHTML = stats.map(([label, value]) => `<div class="stat"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join('');
   }
 
   function addChart(sourceConfig) {
@@ -659,6 +652,9 @@
       showCounts: true,
       showPercentages: true,
       includeBlanks: false,
+      binaryLabels: false,
+      delimiter: state.responseDelimiter,
+      summaryPage: 0,
       filters: [],
       summarySearch: '',
       selectedResponses: new Set(),
@@ -689,7 +685,10 @@
   }
 
   function renderAllCharts() {
+    const expanded = document.querySelector('.expanded-dialog');
+    if (expanded?.querySelector('.chart-card')) expanded.close();
     renderChartEligibilitySummary();
+    state.charts.forEach(chart => { chart.chartInstance?.destroy(); chart.chartInstance = null; });
     els.chartGrid.innerHTML = '';
     if (!state.charts.length && state.allRows.length) {
       const message = state.eligibleChartColumns.length
@@ -758,6 +757,8 @@
     bindSelect(card, '.compare-value-mode', chart, 'compareValueMode');
     bindSelect(card, '.sort-mode', chart, 'sortMode');
     bindSelect(card, '.top-mode', chart, 'topMode');
+    bindSelect(card, '.response-delimiter', chart, 'delimiter');
+    bindCheckbox(card, '.binary-labels', chart, 'binaryLabels');
     bindCheckbox(card, '.show-counts', chart, 'showCounts');
     bindCheckbox(card, '.show-percentages', chart, 'showPercentages');
     bindCheckbox(card, '.include-blanks', chart, 'includeBlanks');
@@ -783,7 +784,8 @@
     card.querySelector('.summary-search').value = chart.summarySearch;
     card.querySelector('.summary-search').addEventListener('input', event => {
       chart.summarySearch = event.target.value;
-      updateChartCard(chart, card);
+      chart.summaryPage = 0;
+      renderSummaryTable(chart, card, getSummaryResult(chart));
     });
 
     card.querySelector('.add-filter').addEventListener('click', () => {
@@ -832,6 +834,7 @@
       showToast('Original responses restored.');
     });
 
+    ['prev', 'next'].forEach(direction => card.querySelector(`.summary-${direction}`).addEventListener('click', () => { chart.summaryPage = Math.max(0, (chart.summaryPage || 0) + (direction === 'next' ? 1 : -1)); renderSummaryTable(chart, card, getSummaryResult(chart)); }));
     card.querySelector('.export-png').addEventListener('click', () => exportChartPng(chart));
     card.querySelector('.export-summary').addEventListener('click', () => exportSummaryCsv(chart));
     card.querySelector('.export-filtered').addEventListener('click', () => exportFilteredDataCsv(chart));
@@ -844,8 +847,9 @@
     input.value = chart[key];
     input.addEventListener('change', event => {
       chart[key] = event.target.value;
+      chart.summaryPage = 0;
       chart.selectedResponses.clear();
-      renderAllCharts();
+      updateChartCard(chart, card);
     });
   }
 
@@ -880,14 +884,14 @@
     renderFilters(chart, card);
     renderActiveFilterChips(chart, card);
 
-    const filteredRows = applyFilters(state.rows, chart.filters);
+    const filteredRows = applyFilters(state.rows, chart.filters, chart.delimiter);
     card.querySelector('.row-count').textContent = `Showing ${formatNumber(filteredRows.length)} of ${formatNumber(state.rows.length)} rows`;
 
     const result = isComparison
       ? buildComparisonResult(filteredRows, chart)
       : buildSingleColumnResult(filteredRows, chart);
 
-    const validResponses = filteredRows.filter(row => getResponseLabels(row[chart.primaryColumn]).some(label => label !== NO_RESPONSE)).length;
+    const validResponses = filteredRows.filter(row => SurveyCore.labels(row[chart.primaryColumn], { delimiter: chart.delimiter }).length > 0).length;
     const categoryTotal = result.type === 'single' ? result.items.length : result.labels.length;
     card.querySelector('.valid-response-count').textContent = `${formatNumber(validResponses)} valid response${validResponses === 1 ? '' : 's'}`;
     card.querySelector('.category-count').textContent = `${formatNumber(categoryTotal)} categor${categoryTotal === 1 ? 'y' : 'ies'}`;
@@ -896,6 +900,12 @@
       ? `Compared by ${getActiveColumnDisplayName(chart.compareColumn)}${activeFilterCount ? ` · ${activeFilterCount} filter${activeFilterCount === 1 ? '' : 's'}` : ''}`
       : (activeFilterCount ? `${activeFilterCount} active filter${activeFilterCount === 1 ? '' : 's'}` : 'No filters or comparison');
     card.querySelector('.question-detail').textContent = getColumnOptionLabel(chart.primaryColumn);
+    const multiSelect = filteredRows.some(row => SurveyCore.labels(row[chart.primaryColumn], { delimiter: chart.delimiter }).length > 1);
+    if (multiSelect && ['pie', 'doughnut'].includes(chart.chartType)) { chart.chartType = 'horizontalBar'; card.querySelector('.chart-type').value = chart.chartType; }
+    card.querySelector('.chart-area canvas').setAttribute('aria-label', `${getActiveColumnDisplayName(chart.primaryColumn)}. Values are available in the summary table below.`);
+    card.querySelector('.chart-area canvas').setAttribute('role', 'img');
+    card.querySelector('.compare-type').value = chart.compareType;
+    card.querySelector('.table-note').textContent = multiSelect || result.overlapping ? 'Multiple selections: percentages may total above 100%. Each respondent is counted once per category.' : `Percentages use ${chart.includeBlanks ? 'all included' : 'answered'} respondents.`;
 
     renderChart(chart, card, result);
     renderSummaryTable(chart, card, result);
@@ -931,7 +941,7 @@
         renderAllCharts();
       });
 
-      const values = getUniqueValues(state.rows, filter.column);
+      const values = getUniqueValues(state.rows, filter.column, chart.delimiter);
       const searchText = (filter.search || '').toLowerCase();
       const visibleValues = values.filter(value => value.toLowerCase().includes(searchText));
       const valuesWrap = filterCard.querySelector('.filter-values');
@@ -939,7 +949,7 @@
         const id = `${filter.id}-${hashString(value)}`;
         return `
           <label for="${id}">
-            <input id="${id}" type="checkbox" value="${escapeAttr(value)}" ${filter.selected.has(value) ? 'checked' : ''}>
+            <input id="${id}" type="checkbox" value="${escapeAttr(value)}" ${Array.from(filter.selected).some(selected => normalizeForMatch(selected) === normalizeForMatch(value)) ? 'checked' : ''}>
             <span>${escapeHtml(value)}</span>
           </label>
         `;
@@ -973,159 +983,36 @@
     }));
   }
 
-  function applyFilters(rows, filters) {
+  function applyFilters(rows, filters, delimiter = state.responseDelimiter) {
     const activeFilters = filters.filter(filter => filter.column && filter.selected.size);
     if (!activeFilters.length) return rows;
 
     return rows.filter(row => activeFilters.every(filter => {
-      return getResponseLabels(row[filter.column]).some(value => filter.selected.has(value));
+      return getResponseLabels(row[filter.column]).some(value => Array.from(filter.selected).some(selected => normalizeForMatch(selected) === normalizeForMatch(value)));
     }));
   }
 
   function buildSingleColumnResult(rows, chart) {
-    const counts = new Map();
-    let nonBlank = 0;
-    const columnLabels = getColumnNonBlankLabels(rows, chart.primaryColumn);
-    const useYesNoLabels = ChartRules.shouldUseYesNoLabels(columnLabels);
-
-    rows.forEach(row => {
-      const originalLabels = getDisplayResponseLabelsForColumn(row[chart.primaryColumn], columnLabels, useYesNoLabels);
-      if (originalLabels.some(label => label !== NO_RESPONSE)) nonBlank += 1;
-      originalLabels.forEach(originalLabel => {
-        if (!chart.includeBlanks && originalLabel === NO_RESPONSE) return;
-        const label = getMergedLabel(originalLabel, chart.merges);
-        if (chart.hiddenResponses.has(label)) return;
-        counts.set(label, (counts.get(label) || 0) + 1);
-      });
-    });
-
-    let items = Array.from(counts, ([response, count]) => ({
-      response,
-      count,
-      rowPercent: nonBlank ? roundOne((count / nonBlank) * 100) : 0,
-      nonBlankPercent: nonBlank ? roundOne((count / nonBlank) * 100) : 0
-    }));
-
-    items = sortItems(items, chart.sortMode);
-    items = applyTopGrouping(items, chart.topMode, nonBlank, nonBlank);
-
-    return {
-      type: 'single',
-      rows,
-      labels: items.map(item => item.response),
-      values: items.map(item => item.count),
-      items
-    };
+    const transformed = chart.binaryLabels ? rows.map(row => ({ ...row, [chart.primaryColumn]: SurveyCore.labels(row[chart.primaryColumn], { delimiter: chart.delimiter }).map(label => ChartRules.getDisplayAnswerLabel(label, [], true)) })) : rows;
+    return { type: 'single', rows, ...SurveyCore.summarize(transformed, chart.primaryColumn, { ...chart, delimiter: chart.delimiter, blankLabel: NO_RESPONSE }) };
   }
 
   function buildComparisonResult(rows, chart) {
-    const matrix = new Map();
-    const comparisonLabels = new Set();
-    const rawPrimaryRespondentTotals = new Map();
-    const rawCompareRespondentTotals = new Map();
-    let total = 0;
-    let respondentTotal = 0;
-    const primaryColumnLabels = getColumnNonBlankLabels(rows, chart.primaryColumn);
-    const compareColumnLabels = getColumnNonBlankLabels(rows, chart.compareColumn);
-    const usePrimaryYesNoLabels = ChartRules.shouldUseYesNoLabels(primaryColumnLabels);
-    const useCompareYesNoLabels = ChartRules.shouldUseYesNoLabels(compareColumnLabels);
-
-    rows.forEach(row => {
-      const primaries = uniqueList(getDisplayResponseLabelsForColumn(row[chart.primaryColumn], primaryColumnLabels, usePrimaryYesNoLabels).map(label => getMergedLabel(label, chart.merges)))
-        .filter(primary => !chart.hiddenResponses.has(primary));
-      const comparisons = uniqueList(getDisplayResponseLabelsForColumn(row[chart.compareColumn], compareColumnLabels, useCompareYesNoLabels));
-      if (!chart.includeBlanks && (primaries.includes(NO_RESPONSE) || comparisons.includes(NO_RESPONSE))) return;
-      if (!primaries.length || !comparisons.length) return;
-
-      primaries.forEach(primary => {
-        rawPrimaryRespondentTotals.set(primary, (rawPrimaryRespondentTotals.get(primary) || 0) + 1);
-      });
-      comparisons.forEach(comparison => {
-        rawCompareRespondentTotals.set(comparison, (rawCompareRespondentTotals.get(comparison) || 0) + 1);
-      });
-      respondentTotal += 1;
-      primaries.forEach(primary => comparisons.forEach(comparison => {
-        if (!matrix.has(primary)) matrix.set(primary, new Map());
-        matrix.get(primary).set(comparison, (matrix.get(primary).get(comparison) || 0) + 1);
-        comparisonLabels.add(comparison);
-        total += 1;
-      }));
-    });
-
-    const rawPrimaryLabels = Array.from(matrix.keys());
-    const rawCompareLabels = Array.from(comparisonLabels);
-    const rawPrimaryTotals = new Map(rawPrimaryLabels.map(label => [
-      label,
-      rawCompareLabels.reduce((sum, compare) => sum + (matrix.get(label).get(compare) || 0), 0)
-    ]));
-    const rawCompareTotals = new Map(rawCompareLabels.map(label => [
-      label,
-      rawPrimaryLabels.reduce((sum, primary) => sum + (matrix.get(primary).get(label) || 0), 0)
-    ]));
-    const primaryLabels = capLabels(rawPrimaryLabels, rawPrimaryTotals, TABLE_ROW_LIMIT);
-    const compareLabels = capLabels(rawCompareLabels, rawCompareTotals, TABLE_ROW_LIMIT);
-    const cappedMatrix = new Map(primaryLabels.map(label => [label, new Map(compareLabels.map(compare => [compare, 0]))]));
-
-    rawPrimaryLabels.forEach(primary => {
-      const primaryLabel = primaryLabels.includes(primary) ? primary : 'Other';
-      rawCompareLabels.forEach(compare => {
-        const compareLabel = compareLabels.includes(compare) ? compare : 'Other';
-        const count = matrix.get(primary).get(compare) || 0;
-        cappedMatrix.get(primaryLabel).set(compareLabel, cappedMatrix.get(primaryLabel).get(compareLabel) + count);
-      });
-    });
-
-    const primaryTotals = new Map(primaryLabels.map(label => [
-      label,
-      compareLabels.reduce((sum, compare) => sum + (cappedMatrix.get(label).get(compare) || 0), 0)
-    ]));
-    const compareTotals = new Map(compareLabels.map(label => [
-      label,
-      primaryLabels.reduce((sum, primary) => sum + (cappedMatrix.get(primary).get(label) || 0), 0)
-    ]));
-    const primaryRespondentTotals = aggregateCappedTotals(primaryLabels, rawPrimaryLabels, rawPrimaryRespondentTotals);
-    const compareRespondentTotals = aggregateCappedTotals(compareLabels, rawCompareLabels, rawCompareRespondentTotals);
-
+    const transformed = chart.binaryLabels ? rows.map(row => ({ ...row, [chart.primaryColumn]: SurveyCore.labels(row[chart.primaryColumn], { delimiter: chart.delimiter }).map(label => ChartRules.getDisplayAnswerLabel(label, [], true)) })) : rows;
+    let result = SurveyCore.comparison(transformed, chart.primaryColumn, chart.compareColumn, { ...chart, delimiter: chart.delimiter, blankLabel: NO_RESPONSE });
+    const overlapping = rows.some(row => SurveyCore.labels(row[chart.primaryColumn], { delimiter: chart.delimiter }).length > 1 || SurveyCore.labels(row[chart.compareColumn], { delimiter: chart.delimiter }).length > 1);
+    if (chart.compareType === 'stacked100' && overlapping) chart.compareType = 'grouped';
     const valueMode = chart.compareType === 'stacked100' ? 'primaryPercent' : chart.compareValueMode;
-    const datasets = compareLabels.map((compare, index) => ({
+    result.datasets = result.compareLabels.map((compare, index) => ({
       label: compare,
-      data: primaryLabels.map(primary => {
-        const count = cappedMatrix.get(primary).get(compare) || 0;
-        if (valueMode === 'primaryPercent') return primaryRespondentTotals.get(primary) ? roundOne((count / primaryRespondentTotals.get(primary)) * 100) : 0;
-        if (valueMode === 'comparePercent') return compareRespondentTotals.get(compare) ? roundOne((count / compareRespondentTotals.get(compare)) * 100) : 0;
-        if (valueMode === 'totalPercent') return respondentTotal ? roundOne((count / respondentTotal) * 100) : 0;
-        return count;
+      data: result.labels.map(primary => {
+        const count = result.matrix.get(primary).get(compare) || 0;
+        const denominator = valueMode === 'primaryPercent' ? result.primaryRespondentTotals.get(primary) : valueMode === 'comparePercent' ? result.compareRespondentTotals.get(compare) : result.respondentTotal;
+        return valueMode === 'counts' ? count : denominator ? roundOne(count / denominator * 100) : 0;
       }),
-      backgroundColor: COLORS[index % COLORS.length],
-      borderColor: COLORS[index % COLORS.length],
-      borderWidth: 1
+      backgroundColor: COLORS[index % COLORS.length], borderColor: COLORS[index % COLORS.length], borderWidth: 1
     }));
-
-    return {
-      type: 'comparison',
-      rows,
-      labels: primaryLabels,
-      compareLabels,
-      matrix: cappedMatrix,
-      primaryTotals,
-      compareTotals,
-      primaryRespondentTotals,
-      compareRespondentTotals,
-      total,
-      respondentTotal,
-      datasets,
-      valueMode
-    };
-  }
-
-  function aggregateCappedTotals(cappedLabels, rawLabels, rawTotals) {
-    return new Map(cappedLabels.map(label => [
-      label,
-      rawLabels.reduce((sum, rawLabel) => {
-        const cappedLabel = cappedLabels.includes(rawLabel) ? rawLabel : 'Other';
-        return cappedLabel === label ? sum + (rawTotals.get(rawLabel) || 0) : sum;
-      }, 0)
-    ]));
+    return { ...result, type: 'comparison', rows, valueMode, overlapping };
   }
 
   function renderChart(chart, card, result) {
@@ -1256,13 +1143,13 @@
           x: {
             stacked,
             beginAtZero: true,
-            max: horizontal && (chart.compareType === 'stacked100' || result.valueMode !== 'counts') ? 100 : undefined,
+            max: horizontal && chart.compareType === 'stacked100' ? 100 : undefined,
             grid: { color: CHART_GRID }
           },
           y: {
             stacked,
             beginAtZero: true,
-            max: !horizontal && (chart.compareType === 'stacked100' || result.valueMode !== 'counts') ? 100 : undefined,
+            max: !horizontal && chart.compareType === 'stacked100' ? 100 : undefined,
             grid: { color: CHART_GRID }
           }
         }
@@ -1284,7 +1171,22 @@
     return text.length > maxLength ? `${text.slice(0, maxLength - 1)}…` : text;
   }
 
+  function getSummaryResult(chart) {
+    const rows = applyFilters(state.rows, chart.filters, chart.delimiter);
+    return chart.compareColumn ? buildComparisonResult(rows, chart) : buildSingleColumnResult(rows, chart);
+  }
+
+  function paginateSummary(chart, card, items) {
+    const pageCount = Math.max(1, Math.ceil(items.length / TABLE_ROW_LIMIT));
+    chart.summaryPage = Math.min(chart.summaryPage || 0, pageCount - 1);
+    card.querySelector('.summary-page').textContent = `Page ${chart.summaryPage + 1} of ${pageCount}`;
+    card.querySelector('.summary-prev').disabled = chart.summaryPage === 0;
+    card.querySelector('.summary-next').disabled = chart.summaryPage + 1 >= pageCount;
+    return items.slice(chart.summaryPage * TABLE_ROW_LIMIT, (chart.summaryPage + 1) * TABLE_ROW_LIMIT);
+  }
+
   function renderSummaryTable(chart, card, result) {
+
     if (result.type === 'comparison') {
       renderComparisonTable(chart, card, result);
       return;
@@ -1292,7 +1194,7 @@
 
     const searchText = chart.summarySearch.trim().toLowerCase();
     const matchingItems = result.items.filter(item => item.response.toLowerCase().includes(searchText));
-    const visibleItems = matchingItems.slice(0, TABLE_ROW_LIMIT);
+    const visibleItems = paginateSummary(chart, card, matchingItems);
     renderTableNote(card, matchingItems.length, 'responses');
     const html = `
       <table>
@@ -1309,7 +1211,7 @@
             <tr>
               <td>
                 <label class="selected-cell">
-                  <input type="checkbox" class="response-select" value="${escapeAttr(item.response)}" ${chart.selectedResponses.has(item.response) ? 'checked' : ''}>
+                  <input type="checkbox" class="response-select" aria-label="Select ${escapeAttr(item.response)}" value="${escapeAttr(item.response)}" ${chart.selectedResponses.has(item.response) ? 'checked' : ''}>
                   <span>Select</span>
                 </label>
               </td>
@@ -1333,8 +1235,9 @@
   function renderComparisonTable(chart, card, result) {
     const mode = result.valueMode || chart.compareValueMode;
     const suffix = mode === 'counts' ? '' : '%';
-    renderTableNote(card, result.labels.length, 'comparison rows');
-    const rows = result.labels.map(primary => {
+    const matchingLabels = result.labels.filter(label => normalizeForMatch(label).includes(normalizeForMatch(chart.summarySearch)));
+    renderTableNote(card, matchingLabels.length, 'comparison rows');
+    const rows = paginateSummary(chart, card, matchingLabels).map(primary => {
       const total = result.primaryRespondentTotals.get(primary) || 0;
       const cells = result.compareLabels.map(compare => {
         const count = result.matrix.get(primary).get(compare) || 0;
@@ -1370,83 +1273,32 @@
   function renderTableNote(card, totalRows, label) {
     const note = card.querySelector('.table-note');
     if (!note) return;
-    note.textContent = totalRows > TABLE_ROW_LIMIT
-      ? `Showing first ${TABLE_ROW_LIMIT} ${label}.`
-      : '';
+    if (totalRows > TABLE_ROW_LIMIT) note.textContent += ` ${formatNumber(totalRows)} ${label}; use Previous / Next to view all.`;
   }
 
-  function capLabels(labels, totals, limit) {
-    const sorted = [...labels].sort((a, b) => (totals.get(b) || 0) - (totals.get(a) || 0) || a.localeCompare(b));
-    if (sorted.length <= limit) return sorted;
-    const topLabels = sorted.slice(0, limit - 1);
-    return topLabels.includes('Other') ? topLabels : [...topLabels, 'Other'];
-  }
-
-  function sortItems(items, sortMode) {
-    return [...items].sort((a, b) => {
-      if (sortMode === 'asc') return a.count - b.count || a.response.localeCompare(b.response);
-      if (sortMode === 'alpha') return a.response.localeCompare(b.response);
-      return b.count - a.count || a.response.localeCompare(b.response);
-    });
-  }
-
-  function applyTopGrouping(items, topMode, totalRows, nonBlankRows) {
-    const topCount = Math.min(Number(topMode) || CHART_RESPONSE_DISPLAY_LIMIT, CHART_RESPONSE_DISPLAY_LIMIT);
-    if (items.length <= topCount) return items;
-
-    const topItems = items.slice(0, topCount - 1);
-    const otherCount = items.slice(topCount - 1).reduce((sum, item) => sum + item.count, 0);
-    if (otherCount > 0) {
-      topItems.push({
-        response: 'Other',
-        count: otherCount,
-        rowPercent: totalRows ? roundOne((otherCount / totalRows) * 100) : 0,
-        nonBlankPercent: nonBlankRows ? roundOne((otherCount / nonBlankRows) * 100) : 0
-      });
-    }
-    return topItems;
-  }
-
-  function getUniqueValues(rows, column) {
+  function getUniqueValues(rows, column, delimiter = state.responseDelimiter) {
     const columnLabels = getColumnNonBlankLabels(rows, column);
-    const useYesNoLabels = ChartRules.shouldUseYesNoLabels(columnLabels);
-    return Array.from(new Set(rows.flatMap(row => getDisplayResponseLabelsForColumn(row[column], columnLabels, useYesNoLabels))))
-      .sort((a, b) => a.localeCompare(b));
+    const useYesNoLabels = false;
+    const values = new Map();
+    rows.forEach(row => getDisplayResponseLabelsForColumn(row[column], columnLabels, useYesNoLabels, delimiter).forEach(label => { if (!values.has(normalizeForMatch(label))) values.set(normalizeForMatch(label), label); }));
+    return [...values.values()].sort((a, b) => a.localeCompare(b));
   }
 
   function getColumnNonBlankLabels(rows, column) {
-    return rows.flatMap(row => getResponseLabels(row[column])).filter(label => label !== NO_RESPONSE);
+    return rows.flatMap(row => SurveyCore.labels(row[column], { delimiter: state.responseDelimiter }));
   }
 
-  function getDisplayResponseLabelsForColumn(value, nonBlankLabels, useYesNoLabels = ChartRules.shouldUseYesNoLabels(nonBlankLabels)) {
-    const labels = getResponseLabels(value);
+  function getDisplayResponseLabelsForColumn(value, nonBlankLabels, useYesNoLabels = false, delimiter = state.responseDelimiter) {
+    const labels = getResponseLabels(value, delimiter);
     return labels.map(label => ChartRules.getDisplayAnswerLabel(label, nonBlankLabels, useYesNoLabels));
   }
 
-  function getResponseLabels(value) {
-    const labels = ChartRules.splitResponseLabels(value)
-      .map(getResponseLabel)
-      .filter(label => label !== NO_RESPONSE);
+  function getResponseLabels(value, delimiter = state.responseDelimiter) {
+    const labels = SurveyCore.labels(value, { delimiter });
     return labels.length ? labels : [NO_RESPONSE];
   }
 
-  function getResponseLabel(value) {
-    const normalized = normalizeValue(value);
-    return normalized === '' ? NO_RESPONSE : normalized;
-  }
-
-  function getMergedLabel(label, merges) {
-    const match = merges.find(merge => merge.sources.has(label));
-    return match ? match.name : label;
-  }
-
-  function normalizeValue(value) {
-    if (value === null || value === undefined) return '';
-    if (Array.isArray(value)) return value.map(normalizeValue).filter(Boolean).join('; ');
-    if (value instanceof Date) return value.toLocaleDateString();
-    if (typeof value === 'string') return value.trim();
-    return String(value).trim();
-  }
+  function normalizeValue(value) { return Array.isArray(value) ? value.map(SurveyCore.text).join('; ') : SurveyCore.text(value); }
 
   function displayCell(value) {
     if (Array.isArray(value)) return value.map(displayCell).filter(Boolean).join('; ');
@@ -1467,7 +1319,7 @@
   }
 
   function exportSummaryCsv(chart) {
-    const rows = applyFilters(state.rows, chart.filters);
+    const rows = applyFilters(state.rows, chart.filters, chart.delimiter);
     const result = chart.compareColumn
       ? buildComparisonResult(rows, chart)
       : buildSingleColumnResult(rows, chart);
@@ -1492,7 +1344,7 @@
   }
 
   function exportFilteredDataCsv(chart) {
-    const rows = applyFilters(state.rows, chart.filters);
+    const rows = applyFilters(state.rows, chart.filters, chart.delimiter);
     const csvRows = [state.columns.map(getActiveColumnDisplayName), ...rows.map(row => state.columns.map(column => displayCell(row[column])))];
     downloadCsv(csvRows, `${safeFileName(chart.title)}-filtered-data.csv`);
     showToast('Filtered data CSV generated.');
@@ -1508,13 +1360,16 @@
 
   function renderLinkedSurveyPanel() {
     if (!els.linkedSurveyPanel) return;
-    const hasDataset = Boolean(state.workbook && state.allRows.length);
+    const hasDataset = Boolean(state.workbook);
     els.linkedSurveyPanel.classList.toggle('hidden', !hasDataset);
     if (!hasDataset) return;
 
-    els.linkPrimaryName.textContent = state.fileName || 'Active dataset';
-    els.linkPrimarySheet.textContent = state.sheetName || 'No sheet selected';
-    populateSelect(els.linkPrimaryField, state.allColumns, els.linkPrimaryField.value || pickLinkField(state.allColumns), false, 'None', column => getActiveColumnDisplayName(column));
+    const source = getSelectedReportSource();
+    const sheetName = els.reportDataSheetSelect.value;
+    const columns = source && sheetName ? getSheetColumns(source.workbook, sheetName) : [];
+    els.linkPrimaryName.textContent = source?.name || 'Report source';
+    els.linkPrimarySheet.textContent = sheetName || 'No sheet selected';
+    populateSelect(els.linkPrimaryField, columns, els.linkPrimaryField.value || pickLinkField(columns), false, 'None', column => getDisplayColumnName(source.workbook, sheetName, column));
     els.toggleLinkedSurveyBtn.textContent = els.linkedSurveySetup.classList.contains('hidden')
       ? (state.linkedSurvey.active ? 'Edit link' : 'Set up link')
       : 'Hide setup';
@@ -1523,13 +1378,13 @@
   }
 
   function getSecondaryWorkbook() {
-    return els.linkSecondarySource.value === 'file' ? state.linkedSurvey.secondaryWorkbook : state.workbook;
+    return els.linkSecondarySource.value === 'file' ? state.linkedSurvey.secondaryWorkbook : getSelectedReportSource()?.workbook;
   }
 
   function getLinkedQuestionDisplayName() {
     const linked = state.linkedSurvey;
     if (!linked.question) return '';
-    return getDisplayColumnName(linked.secondaryWorkbook || state.workbook, linked.secondarySheet || els.linkSecondarySheet.value, linked.question);
+    return getDisplayColumnName(linked.matchedSecondaryWorkbook || getSecondaryWorkbook(), linked.secondarySheet || els.linkSecondarySheet.value, linked.question);
   }
 
   function renderLinkedSurveySource() {
@@ -1541,7 +1396,7 @@
       : 'Using another sheet from the active workbook.';
     const workbook = getSecondaryWorkbook();
     const sheetNames = workbook
-      ? getSurveySheetNames(workbook.SheetNames).filter(name => fileMode || name !== state.sheetName)
+      ? getSurveySheetNames(workbook.SheetNames).filter(name => fileMode || name !== els.reportDataSheetSelect.value)
       : [];
     populateSelect(els.linkSecondarySheet, sheetNames, els.linkSecondarySheet.value, false);
     if (!sheetNames.length) els.linkSecondarySheet.innerHTML = `<option value="">${fileMode ? 'Upload a secondary file' : 'No other sheets available'}</option>`;
@@ -1556,9 +1411,11 @@
       showLinkValidation('Please choose an .xlsx, .xls, or .csv file.', 'error');
       return;
     }
+    const operation = ++secondaryLoadOperation;
     showLinkValidation('Reading the secondary survey...', 'loading');
     try {
       const workbook = await parseWorkbook(await file.arrayBuffer(), extension);
+      if (operation !== secondaryLoadOperation) return;
       if (!workbook.SheetNames.length) throw new Error('No sheets were found in the secondary file.');
       clearSurveyLink(false);
       state.linkedSurvey.secondaryWorkbook = workbook;
@@ -1567,8 +1424,7 @@
       showLinkValidation('Secondary survey loaded. Select matching fields, then match the surveys.', '');
     } catch (error) {
       console.error(error);
-      state.linkedSurvey.secondaryWorkbook = null;
-      state.linkedSurvey.secondaryFileName = '';
+      if (operation !== secondaryLoadOperation) return;
       renderLinkedSurveySource();
       showLinkValidation(error.message || 'The secondary survey could not be opened.', 'error');
     }
@@ -1603,9 +1459,15 @@
     try {
       const secondaryRows = getSheetRecords(workbook, secondarySheet);
       if (!secondaryRows.length) throw new Error('The selected secondary sheet has no usable rows.');
-      const result = LinkedSurvey.analyzeLink(state.allRows, secondaryRows, primaryField, secondaryField);
+      const source = getSelectedReportSource();
+      const primarySheet = els.reportDataSheetSelect.value;
+      const primaryRows = getSheetRecords(source.workbook, primarySheet);
+      const result = LinkedSurvey.analyzeLink(primaryRows, secondaryRows, primaryField, secondaryField, { mode: els.linkMatchMode.value });
       resetLinkedSurveyMatch();
+      state.linkedSurvey.primaryWorkbook = source.workbook;
+      state.linkedSurvey.primarySheet = primarySheet;
       state.linkedSurvey.secondarySheet = secondarySheet;
+      state.linkedSurvey.matchedSecondaryWorkbook = workbook;
       state.linkedSurvey.result = result;
       state.linkedSurvey.active = result.stats.matchedRows > 0;
       invalidateGeneratedReport();
@@ -1664,6 +1526,7 @@
     linked.active = false;
     linked.result = null;
     linked.secondarySheet = '';
+    linked.matchedSecondaryWorkbook = null;
     linked.question = '';
     linked.column = '';
   }
@@ -1712,6 +1575,7 @@
     els.linkStatusSummary.innerHTML = values.map(([label, value, warning]) => `<div class="link-status-stat${warning ? ' is-warning' : ''}"><span>${escapeHtml(label)}</span><strong>${escapeHtml(value)}</strong></div>`).join('');
 
     const warnings = [];
+    if (result.normalizationCollisions?.length) warnings.push('Different source identifiers normalized to the same value. Review duplicate details or switch to exact matching.');
     if (stats.unmatchedRows) warnings.push(`${formatNumber(stats.unmatchedRows)} primary row${stats.unmatchedRows === 1 ? '' : 's'} will be excluded from linked analysis.`);
     if (result.duplicates.primary.length) warnings.push(`${formatNumber(result.duplicates.primary.length)} repeated primary matching value${result.duplicates.primary.length === 1 ? '' : 's'} found. This can be expected when multiple responses belong to one site.`);
     if (result.duplicates.secondary.length) warnings.push(`${formatNumber(result.duplicates.secondary.length)} duplicate secondary matching value${result.duplicates.secondary.length === 1 ? '' : 's'} found. Those ambiguous matches are excluded.`);
@@ -1729,6 +1593,10 @@
 
   function invalidateGeneratedReport() {
     state.reportResult = null;
+    state.reportStale = false;
+    markReportStale();
+    els.reportFreshness.classList.add('hidden');
+    updateReportExportState();
     els.reportOutputTitle.textContent = 'No report generated yet';
     els.reportOutputMeta.textContent = 'Select questions and generate a breakdown report.';
     els.reportContextBar.classList.add('hidden');
@@ -1740,17 +1608,20 @@
     const result = state.linkedSurvey.result;
     if (!result || !result.unmatched.length) return;
     els.linkDetailsTitle.textContent = 'Unmatched primary records';
-    const columns = state.allColumns;
-    els.linkDetailsBody.innerHTML = `<table><thead><tr><th>Source row</th><th>Issue</th>${columns.map(column => `<th>${escapeHtml(getActiveColumnDisplayName(column))}</th>`).join('')}</tr></thead><tbody>${result.unmatched.map(item => `<tr><td class="number">${item.rowNumber}</td><td>${escapeHtml(item.reason)}</td>${columns.map(column => `<td>${escapeHtml(displayCell(item.row[column]))}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
+    const linked = state.linkedSurvey;
+    const columns = getSheetColumns(linked.primaryWorkbook, linked.primarySheet);
+    els.linkDetailsBody.innerHTML = `<table><thead><tr><th>Source row</th><th>Issue</th>${columns.map(column => `<th>${escapeHtml(getDisplayColumnName(linked.primaryWorkbook, linked.primarySheet, column))}</th>`).join('')}</tr></thead><tbody>${result.unmatched.map(item => `<tr><td class="number">${item.rowNumber}</td><td>${escapeHtml(item.reason)}</td>${columns.map(column => `<td>${escapeHtml(displayCell(item.row[column]))}</td>`).join('')}</tr>`).join('')}</tbody></table>`;
     els.linkDetailsDialog.showModal();
   }
 
   function downloadUnmatchedRecords() {
     const result = state.linkedSurvey.result;
     if (!result || !result.unmatched.length) return;
-    const rows = [['Source row', 'Matching value', 'Issue', ...state.allColumns.map(getActiveColumnDisplayName)]];
-    result.unmatched.forEach(item => rows.push([item.rowNumber, item.value, item.reason, ...state.allColumns.map(column => displayCell(item.row[column]))]));
-    downloadCsv(rows, `${safeFileName(state.fileName)}-unmatched-records.csv`);
+    const linked = state.linkedSurvey;
+    const columns = getSheetColumns(linked.primaryWorkbook, linked.primarySheet);
+    const rows = [['Source row', 'Matching value', 'Issue', ...columns.map(column => getDisplayColumnName(linked.primaryWorkbook, linked.primarySheet, column))]];
+    result.unmatched.forEach(item => rows.push([item.rowNumber, item.value, item.reason, ...columns.map(column => displayCell(item.row[column]))]));
+    downloadCsv(rows, `${safeFileName(linked.primarySheet)}-unmatched-records.csv`);
     showToast('Unmatched records CSV generated.');
   }
 
@@ -1768,49 +1639,47 @@
   }
 
   async function loadPublicGoogleSheet() {
-    const url = normalizeValue(els.publicSheetUrl.value);
-    const sheetId = extractGoogleSheetId(url);
-    if (!sheetId) {
-      showReportStatus('Paste a valid public Google Sheets link.', 'error');
-      return;
-    }
-
-    showReportStatus('Loading public Google Sheet...', 'loading');
+    const sheetId = extractGoogleSheetId(els.publicSheetUrl.value);
+    if (!sheetId) { showStatus('Paste a valid public Google Sheets link.', 'error'); return; }
+    const operation = ++loadOperation;
+    activeLoadController?.abort(); activeLoadController = new AbortController();
+    const controller = activeLoadController;
+    const timer = window.setTimeout(() => controller.abort(), 60000);
+    showStatus('Loading public Google Sheet…', 'loading');
     setButtonLoading(els.loadPublicSheetBtn, true, 'Loading…');
     try {
-      const exportUrl = `https://docs.google.com/spreadsheets/d/${sheetId}/export?format=xlsx`;
-      const response = await fetch(exportUrl);
-      if (!response.ok) throw new Error(`Google Sheets returned ${response.status}`);
-      const buffer = await response.arrayBuffer();
-      const workbook = await parseWorkbook(buffer);
-      if (!workbook.SheetNames.length) throw new Error('No sheets found');
-      const sourceName = `Google Sheet: ${sheetId.slice(0, 8)}...`;
+      const response = await fetch(`https://docs.google.com/spreadsheets/d/${sheetId}/export?format=xlsx`, { signal: controller.signal, credentials: 'omit' });
+      if (!response.ok) throw new Error('The sheet must be public and downloadable without signing in.');
+      const workbook = await parseWorkbook(await response.arrayBuffer());
+      if (operation !== loadOperation) return;
+      const sheetName = getSurveySheetNames(workbook.SheetNames).find(name => getSheetRecords(workbook, name).length);
+      if (!sheetName) throw new Error('No survey sheet with response rows was found.');
+      const sourceName = `Google Sheet ${sheetId.slice(0, 8)}`;
+      resetLinkedSurveyMatch();
       upsertReportSource(`google-${sheetId}`, sourceName, workbook);
-      activateWorkbook(workbook, sourceName, workbook.SheetNames[0]);
-      els.reportSourceSelect.value = `google-${sheetId}`;
-      renderReportControls();
-      showStatus('Public Google Sheet loaded. Your charts now use this data source.', '');
-      showReportStatus('Public Google Sheet loaded. It is used only in this browser session.', '');
-      setActiveTab('charts');
-      showToast('Google Sheet loaded successfully.');
+      activateWorkbook(workbook, sourceName, sheetName);
+      els.reportSourceSelect.value = `google-${sheetId}`; renderReportControls();
+      showStatus('Public Google Sheet loaded. Data is held in this browser session.', '');
     } catch (error) {
-      console.error(error);
-      showReportStatus('Could not load that Google Sheet. Make sure it is public or shared with anyone who has the link.', 'error');
-      showToast('The Google Sheet could not be loaded.', 'error');
+      if (operation === loadOperation) showStatus(error.name === 'AbortError' ? 'Loading timed out. Your current analysis was kept.' : `${error.message} Your current analysis was kept.`, 'error');
     } finally {
-      setButtonLoading(els.loadPublicSheetBtn, false);
+      clearTimeout(timer);
+      if (operation === loadOperation) setButtonLoading(els.loadPublicSheetBtn, false);
     }
   }
 
   function upsertReportSource(id, name, workbook) {
     const existing = state.sources.find(source => source.id === id);
     if (existing) {
+      if (existing.workbook !== workbook) {
+        for (const key of reportConfigs.keys()) if (key.startsWith(`${id}\u0000`)) reportConfigs.delete(key);
+      }
       existing.name = name;
       existing.workbook = workbook;
     } else {
       state.sources.push({ id, name, workbook });
     }
-    state.reportResult = null;
+    invalidateGeneratedReport();
     state.previewSearch = '';
     if (els.previewSearch) els.previewSearch.value = '';
   }
@@ -1821,51 +1690,98 @@
 
   function renderReportControls() {
     const previousSource = els.reportSourceSelect.value;
-    els.reportSourceSelect.innerHTML = state.sources.length
-      ? state.sources.map(source => `<option value="${escapeAttr(source.id)}">${escapeHtml(source.name)}</option>`).join('')
-      : '<option value="">No source loaded</option>';
-
-    if (state.sources.some(source => source.id === previousSource)) {
-      els.reportSourceSelect.value = previousSource;
-    } else if (state.sources.length) {
-      els.reportSourceSelect.value = state.sources[0].id;
-    }
-
+    els.reportSourceSelect.innerHTML = state.sources.length ? state.sources.map(source => `<option value="${escapeAttr(source.id)}">${escapeHtml(source.name)}</option>`).join('') : '<option value="">No source loaded</option>';
+    els.reportSourceSelect.value = state.sources.some(source => source.id === previousSource) ? previousSource : state.sources.find(source => source.workbook === state.workbook)?.id || state.sources[0]?.id || '';
     const source = getSelectedReportSource();
-    const disabled = !source;
-    [
-      els.reportNameInput, els.reportDataSheetSelect,
-      els.primaryBreakdownSelect, els.reportFilterColumnSelect,
-      els.generateReportBtn, els.downloadReportCsvBtn, els.downloadReportXlsxBtn
-    ].forEach(control => {
-      control.disabled = disabled;
-    });
-
+    [els.reportNameInput, els.reportDataSheetSelect, els.primaryBreakdownSelect, els.reportFilterColumnSelect, els.generateReportBtn].forEach(control => { control.disabled = !source; });
     if (!source) {
-      els.reportDataSheetSelect.innerHTML = '<option value="">No sheets</option>';
-      els.primaryBreakdownSelect.innerHTML = '<option value="">No breakdown</option>';
-      els.reportFilterColumnSelect.innerHTML = '<option value="">No filter</option>';
-      renderCheckboxList(els.questionChecklist, [], { emptyText: 'No response columns found' });
-      renderCheckboxList(els.reportFilterValues, [], { emptyText: 'No filter values found' });
-      els.reportFilterValues.classList.add('hidden');
-      els.reportFilterNote.textContent = '';
-      updateReportColumnNote([]);
-      return;
+      [els.reportDataSheetSelect, els.primaryBreakdownSelect, els.reportFilterColumnSelect].forEach(control => { control.innerHTML = '<option value="">No data loaded</option>'; });
+      renderCheckboxList(els.questionChecklist, [], { emptyText: 'Load a dataset to choose report questions.' });
+      updateReportSelectionCount(); updateReportExportState(); return;
     }
-
     const sheetNames = getSurveySheetNames(source.workbook.SheetNames);
-    populateSelect(els.reportDataSheetSelect, sheetNames, pickDataSheet(sheetNames), false);
+    const sameSource = reportContextKey.startsWith(source.id + '\u0000');
+    const preferred = sameSource ? reportContextKey.split('\u0000')[1] : source.workbook === state.workbook ? state.sheetName : sheetNames[0];
+    populateSelect(els.reportDataSheetSelect, sheetNames, preferred || sheetNames[0], false);
     if (!normalizeValue(els.reportNameInput.value)) els.reportNameInput.value = 'Question breakdown';
-    renderReportColumns();
+    renderReportColumns(); updateReportExportState();
+  }
+
+  function saveReportConfig() {
+    if (!reportContextKey) return;
+    reportConfigs.set(reportContextKey, {
+      questions: getCheckedItems(els.questionChecklist).map(item => item.value),
+      breakdown: els.primaryBreakdownSelect.value,
+      filter: els.reportFilterColumnSelect.value,
+      values: getCheckedItems(els.reportFilterValues).map(item => item.value),
+      name: els.reportNameInput.value,
+      includeLarge: els.includeLargeReportColumns.checked,
+      additionalFilters: additionalReportFilters.map(filter => ({ column: filter.column, values: filter.values ? [...filter.values] : null }))
+    });
+  }
+
+  function updateReportExportState() {
+    const disabled = !state.reportResult || state.reportStale || Boolean(activeReportWorker);
+    els.downloadReportCsvBtn.disabled = disabled; els.downloadReportXlsxBtn.disabled = disabled;
+  }
+
+  function markReportStale() {
+    ++reportOperation;
+    cancelReportWork?.();
+    setButtonLoading(els.generateReportBtn, false);
+    if (state.reportResult) {
+      state.reportStale = true;
+      els.reportFreshness.textContent = 'Settings changed. Regenerate the report before exporting.';
+      els.reportFreshness.classList.remove('hidden');
+    }
+    updateReportExportState();
+  }
+
+  async function calculateReportSections(rows, questions, breakdownColumns, operation) {
+    const options = { delimiter: state.responseDelimiter };
+    if (typeof Worker === 'undefined' || location.protocol === 'file:') {
+      const sections = [];
+      for (const question of questions) {
+        await yieldToBrowser();
+        if (operation !== reportOperation) throw new DOMException('Report cancelled', 'AbortError');
+        sections.push(SurveyCore.reportSection(rows, question.display, question.column, breakdownColumns, { ...options, answerOrder: question.answerOrder }));
+      }
+      return sections;
+    }
+    return new Promise((resolve, reject) => {
+      const worker = new Worker('report-worker.js?v=20261004-1');
+      activeReportWorker = worker;
+      let finished = false;
+      const timer = window.setTimeout(() => finish(new Error('Report generation timed out. Select fewer questions or groups.')), 120000);
+      const finish = (error, sections) => {
+        if (finished) return;
+        finished = true; clearTimeout(timer); worker.terminate();
+        if (activeReportWorker === worker) { activeReportWorker = null; cancelReportWork = null; }
+        if (error) reject(error); else resolve(sections);
+      };
+      cancelReportWork = () => finish(new DOMException('Report cancelled', 'AbortError'));
+      worker.onmessage = event => {
+        const data = event.data;
+        if (data.id !== operation) return;
+        if (data.error) finish(new Error(data.error));
+        else if (data.sections) finish(null, data.sections);
+        else if (data.progress) showReportStatus(`Generating question ${data.progress.completed} of ${data.progress.total}…`, 'loading');
+      };
+      worker.onerror = () => finish(new Error('The report worker could not start. Reload and try again.'));
+      worker.postMessage({ id: operation, rows, questions, breakdownColumns, options });
+    });
   }
 
   function renderReportColumns() {
     const source = getSelectedReportSource();
     const sheetName = els.reportDataSheetSelect.value;
+    reportContextKey = source ? `${source.id}\u0000${sheetName}` : '';
+    const saved = reportConfigs.get(reportContextKey);
+    if (saved) { els.reportNameInput.value = saved.name; els.includeLargeReportColumns.checked = saved.includeLarge; }
     const primaryColumns = source && sheetName ? getSheetColumns(source.workbook, sheetName) : [];
     const reportData = source && sheetName ? getLinkedReportData(source, sheetName) : { rows: [], column: '' };
     const dataRows = reportData.rows;
-    const columns = dataRows.length ? Object.keys(dataRows[0]).filter(column => !column.startsWith('__')) : primaryColumns;
+    const columns = uniqueList([...primaryColumns, reportData.column].filter(Boolean)).filter(column => !isLinkedReportContext(source, sheetName) || column !== '__linkedSiteKey');
     const reportValuesByColumn = new Map(columns.map(column => [column, getReportUniqueValues(dataRows, column)]));
     const reportFilterValuesByColumn = new Map(columns.map(column => [column, getReportFilterValues(dataRows, column)]));
     const columnStats = columns.map(column => ({
@@ -1878,12 +1794,12 @@
       uniqueCount: reportFilterValuesByColumn.get(column).length
     }));
     const eligibleColumns = columnStats
-      .filter(item => item.uniqueCount > 0 && item.uniqueCount <= REPORT_UNIQUE_VALUE_LIMIT)
+      .filter(item => item.uniqueCount > 0 && (els.includeLargeReportColumns.checked || item.uniqueCount <= REPORT_UNIQUE_VALUE_LIMIT))
       .map(item => item.column);
     const linkedColumn = reportData.column;
     if (isLinkedReportContext(source, sheetName)) state.linkedSurvey.column = linkedColumn;
     const eligibleBreakdownColumns = uniqueList([...eligibleColumns, linkedColumn].filter(Boolean));
-    const eligibleQuestionColumns = eligibleColumns.filter(column => column !== linkedColumn);
+    const eligibleQuestionColumns = eligibleColumns.filter(column => column !== linkedColumn && !(source?.workbook === state.workbook && sheetName === state.sheetName && state.hiddenAnalysisColumns.has(column)));
     const eligibleFilterColumns = filterColumnStats
       .filter(item => item.nonBlankUniqueCount > 0 && item.uniqueCount > 0 && item.uniqueCount < REPORT_FILTER_UNIQUE_VALUE_LIMIT)
       .map(item => item.column);
@@ -1893,24 +1809,28 @@
     const defaultResponseColumns = responseColumns.filter(column => eligibleQuestionColumns.includes(column));
     const displayColumn = column => getDisplayColumnName(source.workbook, sheetName, column);
     renderCheckboxList(els.questionChecklist, eligibleQuestionColumns.map(column => ({ value: column, label: displayColumn(column) })), {
-      checkedValues: defaultResponseColumns.length ? defaultResponseColumns : eligibleQuestionColumns,
+      checkedValues: saved ? saved.questions : defaultResponseColumns.length ? defaultResponseColumns : eligibleQuestionColumns,
       emptyText: 'No response columns found',
-      onChange: updateReportSelectionCount
+      onChange: () => { updateReportSelectionCount(); markReportStale(); saveReportConfig(); }
     });
     populateSelect(els.primaryBreakdownSelect, eligibleBreakdownColumns, linkedColumn, true, 'No main breakdown', displayColumn);
-    els.primaryBreakdownSelect.value = linkedColumn || '';
+    els.primaryBreakdownSelect.value = eligibleBreakdownColumns.includes(saved?.breakdown) ? saved.breakdown : linkedColumn || '';
     populateSelect(els.reportFilterColumnSelect, eligibleFilterColumns, '', true, 'No filter', displayColumn);
-    els.reportFilterColumnSelect.value = '';
-    renderReportFilterValues();
+    els.reportFilterColumnSelect.value = eligibleFilterColumns.includes(saved?.filter) ? saved.filter : '';
+    renderReportFilterValues(saved?.values);
+    additionalReportFilters = (saved?.additionalFilters || []).map(filter => ({ ...filter }));
+    renderAdditionalReportFilters();
     updateReportColumnNote(ignoredColumns, emptyColumns, displayColumn);
     filterReportQuestions();
     updateReportSelectionCount();
   }
 
-  function renderReportFilterValues() {
+  function renderReportFilterValues(selectedValues) {
     const source = getSelectedReportSource();
     const sheetName = els.reportDataSheetSelect.value;
     const filterColumn = els.reportFilterColumnSelect.value;
+    els.reportFilterTools.classList.toggle('hidden', !filterColumn);
+    els.reportFilterSearch.value = '';
     const dataRows = source && sheetName ? getReportDataRows(source, sheetName) : [];
 
     if (!filterColumn || !dataRows.length) {
@@ -1922,9 +1842,9 @@
 
     const values = getReportFilterValues(dataRows, filterColumn);
     renderCheckboxList(els.reportFilterValues, values.map(value => ({ value, label: value })), {
-      checkedValues: values,
+      checkedValues: Array.isArray(selectedValues) ? selectedValues : values,
       emptyText: 'No filter values found',
-      onChange: updateReportFilterSelectionNote
+      onChange: () => { updateReportFilterSelectionNote(); markReportStale(); saveReportConfig(); }
     });
     els.reportFilterValues.classList.toggle('hidden', !values.length);
     updateReportFilterSelectionNote();
@@ -1946,9 +1866,8 @@
     if (!breakdownColumn) return;
     Array.from(els.questionChecklist.querySelectorAll('input[type="checkbox"]'))
       .filter(input => input.value === breakdownColumn)
-      .forEach(input => {
-        input.checked = false;
-      });
+      .forEach(input => { input.checked = false; });
+    updateReportSelectionCount(); markReportStale();
   }
 
   function updateReportColumnNote(ignoredColumns, emptyColumns = [], displayColumn = column => column) {
@@ -1972,73 +1891,91 @@
     els.reportColumnNote.textContent = `${parts.join('. ')}.`;
   }
 
-  function generateDistributionReport() {
+  async function generateDistributionReport() {
     const source = getSelectedReportSource();
-    if (!source) {
-      showReportStatus('Load or upload a source first.', 'error');
-      return;
-    }
-
+    if (!source) { showReportStatus('Load a source first.', 'error'); return; }
+    markReportStale();
+    const operation = ++reportOperation;
     setButtonLoading(els.generateReportBtn, true, 'Generating…');
-    showReportStatus('Generating the breakdown report...', 'loading');
+    showReportStatus('Generating the breakdown report…', 'loading');
     try {
-      const dataRows = getReportDataRows(source, els.reportDataSheetSelect.value);
-      const reportName = normalizeValue(els.reportNameInput.value) || 'Question breakdown';
-      if (!dataRows.length) throw new Error('The raw data sheet has no rows.');
-
-      const reportFilter = getReportFilter(dataRows);
-      const filteredRows = applyReportFilter(dataRows, reportFilter);
-      const breakdownColumns = uniqueList([
-        els.primaryBreakdownSelect.value
-      ]).filter(column => column && column in (dataRows[0] || {}));
-      const breakdownSet = new Set(breakdownColumns);
-      const questions = getCheckedItems(els.questionChecklist).map(item => ({
-        column: item.value,
-        display: item.label
-      })).filter(question => !breakdownSet.has(question.column));
-
-      if (!filteredRows.length) throw new Error('No rows match the selected report filter.');
-      if (!questions.length) throw new Error('Select at least one response column to include.');
-
-      const output = buildDistributionOutput(filteredRows, questions, breakdownColumns, reportFilter.label);
-      const linkedSummary = state.linkedSurvey.column && breakdownColumns.includes(state.linkedSurvey.column)
-        ? LinkedSurvey.buildCategorySummary(filteredRows, state.linkedSurvey.column)
-        : [];
-      const linkedSummaryRows = linkedSummary.length
-        ? [['Linked category coverage'], ['Category', 'Matched sites', 'Survey responses'], ...linkedSummary.map(item => [item.category, item.matchedSites, item.surveyResponses]), []]
-        : [];
+      const sheetName = els.reportDataSheetSelect.value;
+      const dataRows = getReportDataRows(source, sheetName);
+      const filter = getReportFilter(dataRows);
+      const filteredRows = applyReportFilter(dataRows, filter);
+      const breakdownColumns = [els.primaryBreakdownSelect.value].filter(Boolean);
+      const questions = getCheckedItems(els.questionChecklist).filter(item => !breakdownColumns.includes(item.value)).map(item => ({ column: item.value, display: item.label, answerOrder: sortReportAnswers(getReportUniqueValues(filteredRows, item.value), item.value) }));
+      if (!filteredRows.length) throw new Error('No rows match the report filter.');
+      if (!questions.length) throw new Error('Select at least one question.');
+      const sections = await calculateReportSections(filteredRows, questions, breakdownColumns, operation);
+      if (operation !== reportOperation) return;
+      const linkedSummary = isLinkedReportContext(source, sheetName) && state.linkedSurvey.column && breakdownColumns.includes(state.linkedSurvey.column) ? LinkedSurvey.buildCategorySummary(filteredRows, state.linkedSurvey.column) : [];
       state.reportResult = {
-        title: reportName,
-        aoa: [...linkedSummaryRows, ...output.aoa],
-        rows: output.rows,
-        skipped: output.skipped,
-        questionCount: output.questionCount,
-        breakdownLabel: output.breakdownLabel,
-        filterLabel: output.filterLabel,
-        sourceName: source.name,
-        linkedSummary
+        title: normalizeValue(els.reportNameInput.value) || 'Question breakdown',
+        aoa: sections.flatMap(section => section.aoa), rows: sections.flatMap(section => section.rows),
+        skipped: [], questionCount: questions.length,
+        breakdownLabel: breakdownColumns.length ? getCurrentReportColumnDisplayName(breakdownColumns[0]) : 'None',
+        filterLabel: filter.label, sourceName: source.name, sheetName,
+        generatedAt: new Date().toISOString(), linkedSummary,
+        eligibleRows: filteredRows.length, includedRows: filteredRows.length,
+        excludedRows: getSheetRecords(source.workbook, sheetName).length - filteredRows.length,
+        filteredOut: dataRows.length - filteredRows.length,
+        denominatorDescription: 'Answered respondents per question and group. Multiple choices may total above 100%.',
+        responseSeparator: state.responseDelimiter
       };
+      state.reportStale = false;
+      els.reportFreshness.classList.add('hidden');
       renderDistributionOutput(state.reportResult);
-      showReportStatus('Breakdown report generated.', '');
-      showToast('Breakdown report generated.');
+      showReportStatus('Breakdown report generated. Percentages use answered respondents within each group; multiple choices may total above 100%.', '');
+      saveReportConfig();
     } catch (error) {
-      console.error(error);
+      if (error.name === 'AbortError') return;
       showReportStatus(error.message || 'Could not generate the report.', 'error');
-      showToast(error.message || 'Could not generate the report.', 'error');
+      if (state.reportResult) { state.reportStale = true; els.reportFreshness.textContent = 'Generation failed. The previous report is shown below and cannot be exported.'; els.reportFreshness.classList.remove('hidden'); }
     } finally {
-      setButtonLoading(els.generateReportBtn, false);
+      if (operation === reportOperation) setButtonLoading(els.generateReportBtn, false);
+      updateReportExportState();
     }
   }
 
+  function searchChecklist(container, query) {
+    container.querySelectorAll('label').forEach(label => { label.hidden = !normalizeForMatch(label.textContent).includes(normalizeForMatch(query)); });
+  }
+
+  function renderAdditionalReportFilters() {
+    els.additionalReportFilters.innerHTML = '';
+    additionalReportFilters.forEach((filter, index) => {
+      const panel = document.createElement('div'); panel.className = 'field additional-filter';
+      panel.innerHTML = `<label>Additional filter ${index + 1}<select aria-label="Additional filter ${index + 1}">${els.reportFilterColumnSelect.innerHTML}</select></label><button type="button" class="text-btn">Remove filter</button><input type="search" placeholder="Search values" aria-label="Search additional filter ${index + 1} values"><div class="checklist-toolbar"><button type="button" class="text-btn select-values">Select all values</button><button type="button" class="text-btn clear-values">Clear values</button></div><div class="checklist-box"></div>`;
+      const select = panel.querySelector('select'), list = panel.querySelector('.checklist-box');
+      select.value = filter.column;
+      if (select.value !== filter.column) filter.column = '';
+      const source = getSelectedReportSource();
+      const rows = source ? getReportDataRows(source, els.reportDataSheetSelect.value) : [];
+      const values = filter.column ? getReportFilterValues(rows, filter.column) : [];
+      renderCheckboxList(list, values.map(value => ({value, label: value})), { checkedValues: filter.values || values, onChange: () => {
+        filter.values = getCheckedItems(list).map(item => item.value); markReportStale(); saveReportConfig();
+      }});
+      select.addEventListener('change', () => { filter.column = select.value; filter.values = null; markReportStale(); saveReportConfig(); renderAdditionalReportFilters(); });
+      panel.querySelector('button').addEventListener('click', () => { additionalReportFilters.splice(index, 1); markReportStale(); saveReportConfig(); renderAdditionalReportFilters(); });
+      panel.querySelector('input[type=search]').addEventListener('input', event => searchChecklist(list, event.target.value));
+      ['select-values', 'clear-values'].forEach((className, buttonIndex) => panel.querySelector(`.${className}`).addEventListener('click', () => {
+        list.querySelectorAll('input[type=checkbox]').forEach(input => { input.checked = buttonIndex === 0; });
+        filter.values = getCheckedItems(list).map(item => item.value); markReportStale(); saveReportConfig();
+      }));
+      els.additionalReportFilters.appendChild(panel);
+    });
+    els.addReportFilterBtn.disabled = !getSelectedReportSource();
+  }
+
   function getReportFilter(dataRows) {
+    const filters = [];
     const column = els.reportFilterColumnSelect.value;
-    if (!column) return { column: '', values: new Set(), label: 'All rows' };
-    const selectedValues = getCheckedItems(els.reportFilterValues).map(item => item.value);
-    const totalValues = getReportFilterValues(dataRows, column).length;
+    if (column) filters.push({ column, values: getCheckedItems(els.reportFilterValues).map(item => item.value) });
+    additionalReportFilters.filter(filter => filter.column).forEach(filter => filters.push({ column: filter.column, values: filter.values || getReportFilterValues(dataRows, filter.column) }));
     return {
-      column,
-      values: new Set(selectedValues.map(normalizeForMatch)),
-      label: formatReportFilterLabel(column, selectedValues, totalValues, getCurrentReportColumnDisplayName(column))
+      filters: filters.map(filter => ({ column: filter.column, values: new Set(filter.values.map(normalizeForMatch)) })),
+      label: filters.length ? filters.map(filter => formatReportFilterLabel(filter.column, filter.values, getReportFilterValues(dataRows, filter.column).length, getCurrentReportColumnDisplayName(filter.column))).join(' AND ') : 'All rows'
     };
   }
 
@@ -2057,130 +1994,14 @@
   }
 
   function applyReportFilter(dataRows, filter) {
-    if (!filter.column) return dataRows;
-    if (!filter.values.size) return [];
-    return dataRows.filter(row => getResponseLabels(row[filter.column]).some(value => filter.values.has(normalizeForMatch(value))));
-  }
-
-  function buildDistributionOutput(dataRows, questions, breakdownColumns, filterLabel = 'All rows') {
-    const aoa = [];
-    const rows = [];
-    const skipped = [];
-    let questionCount = 0;
-    const breakdownLabel = breakdownColumns.length ? getCurrentReportColumnDisplayName(breakdownColumns[0]) : 'No main breakdown selected';
-    questions.forEach(question => {
-      if (!(question.column in (dataRows[0] || {}))) {
-        skipped.push(question.column);
-        return;
-      }
-      const section = buildQuestionSection(dataRows, question.display || question.column, question.column, breakdownColumns);
-      aoa.push(...section.aoa);
-      rows.push(...section.rows);
-      questionCount += 1;
-    });
-
-    return { aoa, rows, skipped, questionCount, breakdownLabel, filterLabel };
-  }
-
-  function buildQuestionSection(dataRows, displayName, questionColumn, breakdownColumns) {
-    const answers = sortReportAnswers(getReportUniqueValues(dataRows, questionColumn), questionColumn);
-    const combos = createBreakdownCombos(dataRows, breakdownColumns);
-    const headerRows = createReportHeaderRows(combos, breakdownColumns);
-    const width = Math.max(1, headerRows[0].length) + 1;
-    const aoa = [];
-    const rows = [];
-
-    const titleRow = Array(width).fill('');
-    titleRow[0] = displayName;
-    aoa.push(titleRow);
-    rows.push(titleRow.map((value, index) => ({ value, type: index === 0 ? 'question' : 'blank' })));
-
-    headerRows.forEach(row => {
-      const fullRow = ['', ...row];
-      aoa.push(fullRow);
-      rows.push(fullRow.map(value => ({ value, type: 'header' })));
-    });
-
-    answers.forEach(answer => {
-      const row = Array(width).fill('');
-      const renderedRow = Array(width).fill(null).map(() => ({ value: '', type: 'plain' }));
-      row[0] = answer;
-      renderedRow[0] = { value: answer, type: 'answer' };
-
-      combos.forEach((combo, comboIndex) => {
-        const filtered = dataRows.filter(dataRow => combo.conditions.every(condition => getReportValues(dataRow[condition.column]).includes(condition.value)));
-        const counts = countAnswers(filtered, questionColumn);
-        const total = filtered.filter(dataRow => getReportValues(dataRow[questionColumn]).length > 0).length;
-        const count = counts.get(normalizeForMatch(answer)) || 0;
-        const percent = total ? count / total : 0;
-        const countIndex = 1 + (comboIndex * 2);
-        row[countIndex] = count;
-        row[countIndex + 1] = percent;
-        renderedRow[countIndex] = { value: count, type: 'count' };
-        renderedRow[countIndex + 1] = { value: percent, type: 'percent' };
-      });
-
-      aoa.push(row);
-      rows.push(renderedRow);
-    });
-
-    const spacer = Array(width).fill('');
-    aoa.push(spacer);
-    rows.push(spacer.map(value => ({ value, type: 'spacer' })));
-    return { aoa, rows };
-  }
-
-  function getReportSectionWidth(dataRows, breakdownColumns) {
-    const combos = createBreakdownCombos(dataRows, breakdownColumns);
-    const headerRows = createReportHeaderRows(combos, breakdownColumns);
-    return Math.max(3, headerRows[0].length + 1);
-  }
-
-  function createReportHeaderRows(combos, breakdownColumns) {
-    if (!breakdownColumns.length) return [['Count', 'Percentage']];
-
-    const rows = breakdownColumns.map(column => {
-      const row = [];
-      combos.forEach(combo => {
-        const value = combo.conditions.find(condition => condition.column === column)?.value || '';
-        row.push(value, '');
-      });
-      return row;
-    });
-    rows.push(combos.flatMap(() => ['Count', 'Percentage']));
-    return rows;
-  }
-
-  function createBreakdownCombos(dataRows, breakdownColumns) {
-    if (!breakdownColumns.length) return [{ label: 'All rows', conditions: [] }];
-    const valuesByColumn = breakdownColumns.map(column => ({
-      column,
-      values: getReportUniqueValues(dataRows, column)
-    })).filter(item => item.values.length);
-
-    if (!valuesByColumn.length) return [{ label: 'All rows', conditions: [] }];
-
-    return cartesianProduct(valuesByColumn.map(item => item.values)).map(values => ({
-      label: values.join(' / '),
-      conditions: values.map((value, index) => ({ column: valuesByColumn[index].column, value }))
-    }));
-  }
-
-  function countAnswers(rows, questionColumn) {
-    const counts = new Map();
-    rows.forEach(row => {
-      getReportValues(row[questionColumn]).forEach(value => {
-        const key = normalizeForMatch(value);
-        counts.set(key, (counts.get(key) || 0) + 1);
-      });
-    });
-    return counts;
+    if (!filter.filters.length) return dataRows;
+    return dataRows.filter(row => filter.filters.every(item => getResponseLabels(row[item.column]).some(value => item.values.has(normalizeForMatch(value)))));
   }
 
   function renderDistributionOutput(result) {
     els.reportOutputTitle.textContent = result.title;
     const skippedText = result.skipped.length ? `, skipped ${result.skipped.length} missing columns` : '';
-    els.reportOutputMeta.textContent = `${result.questionCount} response columns from ${result.sourceName}${skippedText}`;
+    els.reportOutputMeta.textContent = `${result.questionCount} questions · ${result.sheetName} · ${formatNumber(result.eligibleRows)} included rows · ${formatNumber(result.excludedRows)} excluded (${formatNumber(result.filteredOut || 0)} filtered)`;
     renderReportContextBar(result);
     const linkedSummary = result.linkedSummary && result.linkedSummary.length ? `
       <div class="linked-category-summary">
@@ -2189,8 +2010,13 @@
       </div>` : '';
     els.distributionOutput.innerHTML = `${linkedSummary}
       <table>
+        <caption class="sr-only">${escapeHtml(result.title)}. ${escapeHtml(result.sheetName)}. Counts and percentages by question.</caption>
         <tbody>
           ${result.rows.map(row => {
+            if (row[0]?.type === 'metadata') {
+              const values = row.filter(cell => cell.type === 'count');
+              return `<tr class="report-base-row"><th scope="row">${escapeHtml(row[0].value)}</th>${values.map(cell => `<td colspan="${state.reportMode === 'both' ? 2 : 1}" class="number">${formatNumber(cell.value)}</td>`).join('')}</tr>`;
+            }
             const spacer = row.every(cell => cell.type === 'spacer' || normalizeValue(cell.value) === '');
             return `<tr class="${spacer ? 'report-spacer' : ''}">
               ${row.map(cell => renderReportCell(cell)).join('')}
@@ -2203,7 +2029,7 @@
 
   function renderReportContextBar(result) {
     const items = [];
-    if (result.breakdownLabel && result.breakdownLabel !== 'No main breakdown selected') {
+    if (result.breakdownLabel && !['No main breakdown selected', 'None'].includes(result.breakdownLabel)) {
       items.push(['Breakdown', result.breakdownLabel]);
     }
     if (result.filterLabel && result.filterLabel !== 'All rows') {
@@ -2220,57 +2046,39 @@
   }
 
   function renderReportCell(cell) {
-    const colspan = cell.colspan ? ` colspan="${cell.colspan}"` : '';
-    if (cell.type === 'spacer') return '<td></td>';
-    if (cell.type === 'meta-label') return `<td${colspan} class="report-meta-label">${escapeHtml(cell.value)}</td>`;
-    if (cell.type === 'meta-value') return `<td${colspan} class="report-meta-value">${escapeHtml(cell.value)}</td>`;
-    if (cell.type === 'question') return `<td${colspan} class="question-title">${escapeHtml(cell.value)}</td>`;
-    if (cell.type === 'header') {
-      const valueClass = cell.value === 'Count' ? ' report-count' : (cell.value === 'Percentage' ? ' report-percent' : '');
-      return `<td${colspan} class="report-header${valueClass}">${escapeHtml(cell.value)}</td>`;
+    if (cell.type === 'group-header') {
+      return `<th scope="colgroup" colspan="${state.reportMode === 'both' ? 2 : 1}" class="report-header">${escapeHtml(cell.value)}</th>`;
     }
-    if (cell.type === 'count') return `<td${colspan} class="number report-count">${formatNumber(cell.value)}</td>`;
+    const span = cell.type === 'question' && state.reportMode !== 'both' ? 1 + (cell.colspan - 1) / 2 : cell.colspan;
+    const colspan = span ? ` colspan="${span}"` : '';
+    if (cell.type === 'spacer') return '<td></td>';
+    if (cell.type === 'question') return `<th scope="row"${colspan} class="question-title">${escapeHtml(cell.value)}</th>`;
+    if (cell.type === 'header') {
+      const cls = cell.value === 'Count' ? ' report-count' : cell.value === 'Percentage' ? ' report-percent' : '';
+      return `<th scope="col"${colspan} class="report-header${cls}">${escapeHtml(cell.value)}</th>`;
+    }
+    if (cell.type === 'answer' || cell.type === 'metadata') return `<th scope="row">${escapeHtml(cell.value)}</th>`;
+    if (cell.type === 'count') return `<td${colspan} class="number report-count">${cell.value === '' ? '' : formatNumber(cell.value)}</td>`;
     if (cell.type === 'percent') {
-      const percent = Number(cell.value) || 0;
-      return `<td${colspan} class="number heat-cell report-percent" style="background:${getHeatColor(percent)}">${formatPercent(percent)}</td>`;
+      if (cell.value === null) return `<td class="number report-percent" title="No answered respondents in this group">—</td>`;
+      return `<td${colspan} class="number heat-cell report-percent" style="background:${getHeatColor(cell.value)}">${formatPercent(cell.value)}</td>`;
     }
     return `<td${colspan}>${escapeHtml(cell.value)}</td>`;
   }
 
   function downloadDistributionCsv() {
-    if (!state.reportResult) {
-      showToast('Generate a breakdown report first.', 'warning');
-      return;
-    }
-    downloadCsv(state.reportResult.aoa.map(row => row.map(value => typeof value === 'number' ? value : displayCell(value))), `${safeFileName(state.reportResult.title)}.csv`);
-    showToast('Report CSV generated.');
+    if (!state.reportResult || state.reportStale) { showToast('Generate a current report before exporting.', 'warning'); return; }
+    downloadCsv(DataIO.reportRows(state.reportResult, { mode: els.reportExportMode.value, percentText: true }), `${safeFileName(state.reportResult.title)}.csv`);
   }
 
   function downloadDistributionXlsx() {
-    if (!state.reportResult) {
-      showToast('Generate a breakdown report first.', 'warning');
-      return;
-    }
+    if (!state.reportResult || state.reportStale) { showToast('Generate a current report before exporting.', 'warning'); return; }
+    const rows = DataIO.reportRows(state.reportResult, { mode: els.reportExportMode.value });
     const workbook = XLSX.utils.book_new();
-    const sheet = XLSX.utils.aoa_to_sheet(state.reportResult.aoa);
+    const sheet = XLSX.utils.aoa_to_sheet(rows);
+    DataIO.configureReportSheet(sheet, rows);
     XLSX.utils.book_append_sheet(workbook, sheet, safeSheetName(state.reportResult.title));
     XLSX.writeFile(workbook, `${safeFileName(state.reportResult.title)}.xlsx`);
-    showToast('Excel report generated.');
-  }
-
-  function downloadCsv(rows, fileName) {
-    const csv = rows.map(row => row.map(csvEscape).join(',')).join('\r\n');
-    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
-    const link = document.createElement('a');
-    link.href = URL.createObjectURL(blob);
-    link.download = fileName;
-    link.click();
-    URL.revokeObjectURL(link.href);
-  }
-
-  function csvEscape(value) {
-    const text = String(value ?? '');
-    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
   }
 
   function populateSelect(select, values, selectedValue, includeNone, noneLabel = 'None', labelForValue = value => value) {
@@ -2283,18 +2091,6 @@
     else if (previous && (values.includes(previous) || (includeNone && previous === ''))) select.value = previous;
     else if (includeNone) select.value = '';
     else if (values.length) select.value = values[0];
-  }
-
-  function pickSheet(sheetNames, pattern) {
-    return sheetNames.find(name => pattern.test(name)) || sheetNames[0] || '';
-  }
-
-  function pickDataSheet(sheetNames) {
-    return sheetNames.find(name => !isDictionarySheet(name) && !/question|config|input|generation|site|scs|lookup|mapping/i.test(name)) || sheetNames[0] || '';
-  }
-
-  function pickColumn(columns, pattern) {
-    return columns.find(column => pattern.test(column)) || columns[0] || '';
   }
 
   function pickLinkField(columns) {
@@ -2364,7 +2160,9 @@
 
     const rows = getSheetMatrix(workbook, sheetName);
     const headerRow = explicitHeaderRow === null ? findHeaderRow(rows) : explicitHeaderRow;
-    const rawHeaders = rows[headerRow] || [];
+    const rawHeaders = [...(rows[headerRow] || [])];
+    const columnCount = rows.reduce((width, row) => Math.max(width, row.length), 0);
+    while (rawHeaders.length < columnCount) rawHeaders.push('');
     const columns = makeUniqueHeaders(rawHeaders);
     const originalByColumn = new Map(columns.map((column, index) => [column, normalizeValue(rawHeaders[index]) || column]));
     const details = { headerRow, columns, originalByColumn };
@@ -2384,12 +2182,14 @@
     const rows = getSheetMatrix(workbook, sheetName);
     const headerRow = headerDetails.headerRow;
     const headers = headerDetails.columns;
+    const sourceRows = sheetRowIndexCache.get(workbook)?.get(sheetName) || [];
     const records = rows.slice(headerRow + 1)
-      .map(row => {
-        const record = {};
+      .map((row, index) => {
+        const record = Object.create(null);
         headers.forEach((header, index) => {
           record[header] = row[index] === undefined ? '' : row[index];
         });
+        record.__sourceRowNumber = sourceRows[headerRow + 1 + index] || headerRow + 2 + index;
         return record;
       });
     workbookRecords.set(sheetName, records);
@@ -2400,8 +2200,8 @@
     return Boolean(state.linkedSurvey.active
       && state.linkedSurvey.result
       && source
-      && source.workbook === state.workbook
-      && sheetName === state.sheetName);
+      && source.workbook === state.linkedSurvey.primaryWorkbook
+      && sheetName === state.linkedSurvey.primarySheet);
   }
 
   function getReportDataRows(source, sheetName) {
@@ -2414,7 +2214,7 @@
     }
     if (state.linkedSurvey.question) {
       return LinkedSurvey.enrichMatchedRows(state.linkedSurvey.result, state.linkedSurvey.question, {
-        displayQuestion: getLinkedQuestionDisplayName()
+        displayQuestion: getLinkedQuestionDisplayName(), delimiter: els.linkDelimiter.value
       });
     }
     return {
@@ -2424,30 +2224,22 @@
   }
 
   function getSheetMatrix(workbook, sheetName) {
-    let workbookSheets = sheetMatrixCache.get(workbook);
-    if (!workbookSheets) {
-      workbookSheets = new Map();
-      sheetMatrixCache.set(workbook, workbookSheets);
-    }
-    if (workbookSheets.has(sheetName)) return workbookSheets.get(sheetName);
-
+    if (!sheetMatrixCache.has(workbook)) sheetMatrixCache.set(workbook, new Map());
+    const cache = sheetMatrixCache.get(workbook);
+    if (cache.has(sheetName)) return cache.get(sheetName);
     const sheet = workbook.Sheets[sheetName];
-    if (!sheet) return [];
-    const matrix = XLSX.utils.sheet_to_json(sheet, {
-      header: 1,
-      defval: '',
-      blankrows: false
-    }).filter(row => row.some(cell => normalizeValue(cell) !== ''));
-    workbookSheets.set(sheetName, matrix);
+    if (!sheet?.['!ref']) return [];
+    const start = XLSX.utils.decode_range(sheet['!ref']).s.r;
+    const raw = XLSX.utils.sheet_to_json(sheet, { header: 1, defval: '', blankrows: true });
+    const matrix = [], sourceRows = [];
+    raw.forEach((row, index) => { if (row.some(cell => normalizeValue(cell) !== '')) { matrix.push(row); sourceRows.push(start + index + 1); } });
+    cache.set(sheetName, matrix);
+    if (!sheetRowIndexCache.has(workbook)) sheetRowIndexCache.set(workbook, new Map());
+    sheetRowIndexCache.get(workbook).set(sheetName, sourceRows);
     return matrix;
   }
 
-  function findHeaderRow(rows) {
-    if (!rows.length) return 0;
-    const surveyHeaderIndex = rows.slice(0, 6).findIndex(row => row.some(cell => /^survey$/i.test(normalizeValue(cell))));
-    if (surveyHeaderIndex >= 0) return surveyHeaderIndex;
-    return 0;
-  }
+  function findHeaderRow() { return 0; }
 
   function renderCheckboxList(container, items, options = {}) {
     const normalizedItems = items.map(item => typeof item === 'string' ? { value: item, label: item } : item);
@@ -2489,22 +2281,15 @@
   }
 
   function getReportUniqueValues(rows, column) {
-    const seen = new Set();
-    const values = [];
-    rows.forEach(row => {
-      getReportValues(row[column]).forEach(value => {
-        const key = normalizeForMatch(value);
-        if (!key || seen.has(key)) return;
-        seen.add(key);
-        values.push(value);
-      });
-    });
-    return values;
+    const values = new Map();
+    rows.forEach(row => getReportValues(row[column]).forEach(value => { if (!values.has(normalizeForMatch(value))) values.set(normalizeForMatch(value), value); }));
+    return [...values.values()];
   }
 
   function getReportFilterValues(rows, column) {
-    return Array.from(new Set(rows.flatMap(row => getResponseLabels(row[column]))))
-      .sort((a, b) => a.localeCompare(b));
+    const values = new Map();
+    rows.forEach(row => getResponseLabels(row[column]).forEach(value => { if (!values.has(normalizeForMatch(value))) values.set(normalizeForMatch(value), value); }));
+    return [...values.values()].sort((a, b) => a.localeCompare(b));
   }
 
   function pickRecordColumns(row, columns) {
@@ -2515,28 +2300,15 @@
     return record;
   }
 
-  function getReportValue(value) {
-    const normalized = normalizeValue(value);
-    return normalized === NO_RESPONSE ? '' : normalized;
-  }
-
-  function getReportValues(value) {
-    return getResponseLabels(value).map(getReportValue).filter(Boolean);
-  }
+  function getReportValues(value) { return SurveyCore.labels(value, { delimiter: state.responseDelimiter }); }
 
   function sortReportAnswers(values, questionText) {
-    const observed = values.filter(Boolean);
-    const normalizedObserved = new Set(observed.map(normalizeForMatch));
     const hardSet = getHardCodedAnswerSet(questionText);
-    if (hardSet) return hardSet;
-
-    const matchingSet = ANSWER_SETS.find(set => {
-      const normalizedSet = new Set(set.map(normalizeForMatch));
-      return Array.from(normalizedObserved).every(value => normalizedSet.has(value));
-    });
-
-    if (matchingSet) return matchingSet;
-    return [...observed].sort((a, b) => a.localeCompare(b));
+    const normalizedObserved = new Set(values.map(normalizeForMatch));
+    const matchingSet = hardSet || ANSWER_SETS.find(set => [...normalizedObserved].every(value => new Set(set.map(normalizeForMatch)).has(value)));
+    if (!matchingSet) return [...values].sort((a, b) => a.localeCompare(b));
+    const expected = new Set(matchingSet.map(normalizeForMatch));
+    return [...matchingSet, ...values.filter(value => !expected.has(normalizeForMatch(value)))];
   }
 
   function getHardCodedAnswerSet(questionText) {
@@ -2552,22 +2324,11 @@
     return null;
   }
 
-  function cartesianProduct(arrays) {
-    return arrays.reduce((acc, values) => acc.flatMap(prefix => values.map(value => [...prefix, value])), [[]]);
-  }
-
   function uniqueList(values) {
     return Array.from(new Set(values));
   }
 
-  function normalizeForMatch(value) {
-    return normalizeValue(value)
-      .toLowerCase()
-      .replace(/[\u2018\u2019]/g, "'")
-      .replace(/[\u201c\u201d]/g, '"')
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
+  function normalizeForMatch(value) { return SurveyCore.key(value); }
 
   function getHeatColor(percent) {
     const value = Math.max(0, Math.min(1, Number(percent) || 0));
@@ -2602,7 +2363,7 @@
       metric.values.push(value);
       if (normalized) {
         metric.answeredCount += 1;
-        metric.uniqueValues.add(normalized);
+        getReportValues(value).forEach(label => metric.uniqueValues.add(normalizeForMatch(label)));
       }
     }));
 
@@ -2630,25 +2391,25 @@
     });
     let analysisRows = state.allRows;
     const linked = state.linkedSurvey;
-    if (linked.active && linked.result) {
+    if (linked.active && linked.result && linked.primaryWorkbook === state.workbook && linked.primarySheet === state.sheetName) {
       analysisRows = linked.result.matched.map(match => ({ ...match.primary, __linkedSiteKey: match.key }));
       if (linked.question) {
         const enriched = LinkedSurvey.enrichMatchedRows(linked.result, linked.question, {
-          displayQuestion: getLinkedQuestionDisplayName()
+          displayQuestion: getLinkedQuestionDisplayName(), delimiter: els.linkDelimiter.value
         });
         analysisRows = enriched.rows;
         linked.column = enriched.column;
-        const values = analysisRows.flatMap(row => getResponseLabels(row[linked.column])).filter(value => value !== NO_RESPONSE);
+        const values = analysisRows.flatMap(row => SurveyCore.labels(row[linked.column]));
         state.columnStats.set(linked.column, {
           type: 'Linked survey',
-          answeredCount: analysisRows.filter(row => getResponseLabels(row[linked.column]).some(value => value !== NO_RESPONSE)).length,
+          answeredCount: analysisRows.filter(row => SurveyCore.labels(row[linked.column]).length > 0).length,
           uniqueCount: new Set(values.map(normalizeForMatch)).size,
-          missingCount: analysisRows.filter(row => !getResponseLabels(row[linked.column]).some(value => value !== NO_RESPONSE)).length
+          missingCount: analysisRows.filter(row => SurveyCore.labels(row[linked.column]).length === 0).length
         });
       }
     }
-    state.columns = linked.active && linked.column ? [...eligible, linked.column] : eligible;
-    state.eligibleChartColumns = linked.active && linked.column
+    state.columns = linked.active && linked.primaryWorkbook === state.workbook && linked.primarySheet === state.sheetName && linked.column ? [...eligible, linked.column] : eligible;
+    state.eligibleChartColumns = linked.active && linked.primaryWorkbook === state.workbook && linked.primarySheet === state.sheetName && linked.column
       ? ChartRules.getSelectableChartColumns(state.columns, { hiddenColumns: state.hiddenAnalysisColumns })
       : eligible;
     state.rows = analysisRows.map(row => ({ ...pickRecordColumns(row, state.columns), __linkedSiteKey: row.__linkedSiteKey || '' }));
@@ -2680,7 +2441,7 @@
   }
 
   function setActiveTab(tabName) {
-    if (!state.workbook || !state.allRows.length) return;
+    if (!state.workbook) return;
     const panels = {
       charts: els.dashboardSection,
       report: document.getElementById('distributionSection'),
@@ -2696,6 +2457,7 @@
       button.tabIndex = active ? 0 : -1;
     });
     if (tabName === 'preview') renderDataPreview();
+    renderFileStats();
   }
 
   function showSheetPicker() {
@@ -2771,11 +2533,12 @@
       renderFileStats();
       renderAllCharts();
       renderDataPreview();
+      markReportStale(); renderReportColumns();
       showToast(input.checked ? 'Column restored to chart analysis.' : 'Column hidden from chart analysis.');
     }));
 
     els.previewResultCount.textContent = `Showing ${formatNumber(visibleRows.length)} of ${formatNumber(matchingRows.length)} matching rows`;
-    els.dataPreviewTable.innerHTML = `<table><thead><tr><th>#</th>${state.allColumns.map(column => { const displayName = getActiveColumnDisplayName(column); return `<th title="${escapeAttr(displayName)}">${escapeHtml(truncateLabel(displayName, 42))}</th>`; }).join('')}</tr></thead><tbody>${visibleRows.map((row, index) => `<tr><td class="number">${index + 1}</td>${state.allColumns.map(column => {
+    els.dataPreviewTable.innerHTML = `<table><thead><tr><th>#</th>${state.allColumns.map(column => { const displayName = getActiveColumnDisplayName(column); return `<th title="${escapeAttr(displayName)}">${escapeHtml(truncateLabel(displayName, 42))}</th>`; }).join('')}</tr></thead><tbody>${visibleRows.map((row, index) => `<tr><td class="number">${row.__sourceRowNumber || index + 2}</td>${state.allColumns.map(column => {
       const value = displayCell(row[column]);
       return `<td title="${escapeAttr(value)}">${value ? escapeHtml(value) : '<span class="missing-value">Blank</span>'}</td>`;
     }).join('')}</tr>`).join('') || `<tr><td colspan="${state.allColumns.length + 1}">No rows match your search.</td></tr>`}</tbody></table>`;
@@ -2789,11 +2552,11 @@
     updateReportSelectionCount();
   }
 
-  function setVisibleReportQuestions(checked) {
-    els.questionChecklist.querySelectorAll('label:not(.is-filtered-out) input[type="checkbox"]').forEach(input => {
+  function setVisibleReportQuestions(checked, visibleOnly = false) {
+    els.questionChecklist.querySelectorAll(visibleOnly ? 'label:not(.is-filtered-out) input[type="checkbox"]' : 'input[type="checkbox"]').forEach(input => {
       input.checked = checked;
     });
-    updateReportSelectionCount();
+    updateReportSelectionCount(); markReportStale(); saveReportConfig();
   }
 
   function updateReportSelectionCount() {
@@ -2803,13 +2566,15 @@
   }
 
   function setReportMode(mode) {
+    state.reportMode = mode;
+    if (state.reportResult) renderDistributionOutput(state.reportResult);
     ['count', 'percentage', 'both'].forEach(value => els.distributionOutput.classList.toggle(`report-mode-${value}`, value === mode));
-    document.querySelectorAll('[data-report-mode]').forEach(button => button.classList.toggle('is-active', button.dataset.reportMode === mode));
+    document.querySelectorAll('[data-report-mode]').forEach(button => { button.classList.toggle('is-active', button.dataset.reportMode === mode); button.setAttribute('aria-pressed', String(button.dataset.reportMode === mode)); });
   }
 
   function setReportDensity(density) {
     ['compact', 'comfortable'].forEach(value => els.distributionOutput.classList.toggle(`density-${value}`, value === density));
-    document.querySelectorAll('[data-density]').forEach(button => button.classList.toggle('is-active', button.dataset.density === density));
+    document.querySelectorAll('[data-density]').forEach(button => { button.classList.toggle('is-active', button.dataset.density === density); button.setAttribute('aria-pressed', String(button.dataset.density === density)); });
   }
 
   function setReportZoom(value) {
@@ -2818,10 +2583,27 @@
     els.zoomValue.textContent = `${Math.round(state.reportZoom * 100)}%`;
   }
 
+  function expandPanel(panel, expanded) {
+    if (expanded) {
+      const previous = document.querySelector('.expanded-dialog');
+      if (previous) previous.close();
+      const dialog = document.createElement('dialog');
+      dialog.className = 'expanded-dialog'; dialog.setAttribute('aria-label', 'Expanded analysis view');
+      const close = document.createElement('button'); close.className = 'secondary-btn expanded-close'; close.textContent = 'Close expanded view';
+      const placeholder = document.createComment('Expanded analysis placeholder');
+      const returnFocus = document.activeElement;
+      panel.before(placeholder); dialog.append(close, panel); document.body.append(dialog);
+      panel.classList.add('is-expanded');
+      dialog.addEventListener('close', () => { panel.classList.remove('is-expanded'); placeholder.replaceWith(panel); dialog.remove(); els.fullscreenReportBtn.setAttribute('aria-pressed', 'false'); returnFocus?.focus(); }, { once: true });
+      close.addEventListener('click', () => dialog.close());
+      dialog.showModal(); close.focus();
+    } else panel.closest('dialog')?.close();
+  }
+
   function toggleReportFullscreen() {
     const panel = els.distributionOutput.closest('.report-output-panel');
-    panel.classList.toggle('is-expanded');
-    document.body.classList.toggle('has-expanded-view', panel.classList.contains('is-expanded'));
+    const expanded = !panel.classList.contains('is-expanded');
+    expandPanel(panel, expanded); els.fullscreenReportBtn.setAttribute('aria-pressed', String(expanded));
   }
 
   function startTitleEdit(card) {
@@ -2838,8 +2620,7 @@
   }
 
   function toggleChartExpanded(card) {
-    card.classList.toggle('is-expanded');
-    document.body.classList.toggle('has-expanded-view', card.classList.contains('is-expanded'));
+    expandPanel(card, !card.classList.contains('is-expanded'));
     card.querySelector('.chart-more-menu').removeAttribute('open');
   }
 
@@ -2902,7 +2683,17 @@
     els.reportStatus.className = `status-message ${type || ''}`.trim();
   }
 
-  function resetDataset() {
+  function resetDataset(cancelLoads = true) {
+    document.querySelector('.expanded-dialog')?.close();
+    if (cancelLoads) { ++loadOperation; activeLoadController?.abort(); }
+    ++secondaryLoadOperation; ++reportOperation; cancelReportWork?.();
+    reportConfigs.clear(); additionalReportFilters = []; reportContextKey = '';
+    state.hiddenAnalysisColumns = new Set();
+    state.columnStats = new Map();
+    state.reportStale = false;
+    state.activeTab = 'charts';
+    els.reportFreshness.classList.add('hidden');
+    els.previewSearch.value = ''; state.previewSearch = '';
     state.workbook = null;
     state.fileName = '';
     state.sheetName = '';
@@ -2921,7 +2712,7 @@
     });
     state.charts = [];
     state.nextChartNumber = 1;
-    state.sources = state.sources.filter(source => source.id !== UPLOADED_SOURCE_ID);
+    state.sources = [];
     state.reportResult = null;
     state.linkedSurvey = {
       active: false,
@@ -2940,7 +2731,10 @@
     els.reportContextBar.classList.add('hidden');
     els.reportContextBar.innerHTML = '';
     els.distributionOutput.innerHTML = '<div class="report-empty"><span class="empty-state-icon" aria-hidden="true">▦</span><strong>Select questions and generate a breakdown report.</strong><span>Your report preview will appear here.</span></div>';
-    renderDataset();
+    showReportStatus('', ''); showLinkValidation('', '');
+    els.reportFreshness.classList.add('hidden');
+    setButtonLoading(els.generateReportBtn, false);
+    renderDataset(); updateReportExportState();
   }
 
   function showStatus(message, type) {

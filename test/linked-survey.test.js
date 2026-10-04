@@ -100,3 +100,75 @@ test('rejects a secondary question when any matched record lacks the selected fi
 
   assert.throws(() => LinkedSurvey.enrichMatchedRows(link, 'Segment'), /invalid/);
 });
+
+test('reports normalized IDs that came from distinct raw values', () => {
+  const result = LinkedSurvey.analyzeLink(
+    [{ Site: 'North-Site' }],
+    [{ Site: 'north site' }],
+    'Site',
+    'Site'
+  );
+  assert.deepEqual(JSON.parse(JSON.stringify(result.normalizationCollisions)), [{
+    key: 'northsite',
+    primaryValues: ['North-Site'],
+    secondaryValues: ['north site']
+  }]);
+});
+
+test('supports exact matching without normalization', () => {
+  const result = LinkedSurvey.analyzeLink(
+    [{ Site: ' North-Site ' }],
+    [{ Site: 'north site' }],
+    'Site',
+    'Site',
+    { mode: 'exact' }
+  );
+  assert.equal(result.matchingMode, 'exact');
+  assert.equal(result.stats.matchedRows, 0);
+  assert.equal(result.unmatched[0].key, 'North-Site');
+});
+
+test('uses source row numbers when available', () => {
+  const result = LinkedSurvey.analyzeLink(
+    [{ Site: 'A', __sourceRowNumber: 17 }],
+    [{ Site: 'A', __sourceRowNumber: 42 }],
+    'Site',
+    'Site'
+  );
+  assert.equal(result.matched[0].primaryRowNumber, 17);
+  assert.equal(result.matched[0].secondaryRowNumber, 42);
+});
+
+test('avoids overwriting a primary column with the linked column', () => {
+  const result = LinkedSurvey.analyzeLink(
+    [{ Site: 'A', 'Linked survey: Type': 'Primary value' }],
+    [{ Site: 'A', Type: 'Urban' }],
+    'Site',
+    'Site'
+  );
+  const enriched = LinkedSurvey.enrichMatchedRows(result, 'Type');
+  assert.equal(enriched.column, 'Linked survey: Type (2)');
+  assert.equal(enriched.rows[0]['Linked survey: Type'], 'Primary value');
+  assert.deepEqual(Array.from(enriched.rows[0][enriched.column]), ['Urban']);
+});
+
+test('uses semicolons by default while allowing explicit splitters', () => {
+  const result = LinkedSurvey.analyzeLink([{ Site: 'A' }], [{ Site: 'A', Type: 'Choice, with comma' }], 'Site', 'Site');
+  assert.deepEqual(Array.from(LinkedSurvey.enrichMatchedRows(result, 'Type').rows[0]['Linked survey: Type']), ['Choice, with comma']);
+  assert.deepEqual(Array.from(LinkedSurvey.enrichMatchedRows(result, 'Type', { delimiter: 'comma' }).rows[0]['Linked survey: Type']), ['Choice', 'with comma']);
+  assert.deepEqual(Array.from(LinkedSurvey.splitMultiSelect(['A, B', 'C'], 'semicolon')), ['A, B', 'C']);
+});
+
+test('keeps none-delimited and pre-parsed array values atomic', () => {
+  assert.deepEqual(Array.from(LinkedSurvey.splitMultiSelect('A, B; C', 'none')), ['A, B; C']);
+  assert.deepEqual(Array.from(LinkedSurvey.splitMultiSelect(['Washington, DC', 'A;B'])), ['Washington, DC', 'A;B']);
+});
+
+test('does not split comma-containing linked array labels in category summaries', () => {
+  const summary = LinkedSurvey.buildCategorySummary([
+    { Category: ['Washington, DC'], __linkedSiteKey: 'A' }
+  ], 'Category');
+  assert.deepEqual(JSON.parse(JSON.stringify(summary)), [
+    { category: 'Washington, DC', matchedSites: 1, surveyResponses: 1 }
+  ]);
+});

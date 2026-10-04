@@ -3,19 +3,33 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; connect-src 'self' https://docs.google.com https://*.googleusercontent.com;">
   <meta name="theme-color" content="#087f73">
   <title>Survey Response Analyzer</title>
-  <link rel="icon" type="image/png" href="assets/survey-response-logo.png?v=20260909-1">
-  <link rel="apple-touch-icon" href="assets/survey-response-logo.png?v=20260909-1">
-  <link rel="stylesheet" href="style.css?v=20260903-2">
+  <link rel="icon" type="image/png" href="assets/survey-response-logo.png?v=20261004-2">
+  <link rel="apple-touch-icon" href="assets/survey-response-logo.png?v=20261004-2">
+  <link rel="stylesheet" href="style.css?v=20261004-2">
 </head>
 <body>
   <header class="app-header">
     <div class="header-inner">
       <div class="brand-mark" aria-hidden="true">
-        <img src="assets/survey-response-logo.png?v=20260909-1" alt="" width="40" height="40">
+        <img src="assets/survey-response-logo.png?v=20261004-2" alt="" width="40" height="40">
       </div>
       <div class="brand-copy">
+      <div id="statusMessage" class="status-message" role="status" aria-live="polite"></div>
+      <section id="fileDetails" class="dataset-bar hidden" aria-label="Active dataset summary">
+      <div class="dataset-identity">
+        <span class="dataset-dot" aria-hidden="true"></span>
+        <div><span>Active dataset</span><strong id="datasetFileName">—</strong></div>
+      </div>
+      <div id="fileStats" class="dataset-stats"></div>
+      <div class="dataset-actions">
+        <button id="replaceFileBtn" class="ghost-btn" type="button">Replace file</button>
+        <button id="clearDataBtn" class="ghost-btn danger-text" type="button">Clear data</button>
+      </div>
+      </section>
+
         <h1>Survey Response Analyzer</h1>
         <p>Upload, analyze, compare, and export survey responses</p>
       </div>
@@ -77,7 +91,7 @@
         <svg viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2.5 16 5v4.5c0 3.8-2.5 6.5-6 8-3.5-1.5-6-4.2-6-8V5z"/><path d="m7 10 2 2 4-4"/></svg>
         <span>Your files are processed locally in your browser and are not uploaded to a server.</span>
       </div>
-      <div id="statusMessage" class="status-message" role="status" aria-live="polite"></div>
+
 
       <div id="emptyState" class="empty-state">
         <div>
@@ -88,64 +102,7 @@
       </div>
     </section>
 
-    <section id="fileDetails" class="dataset-bar hidden" aria-label="Active dataset summary">
-      <div class="dataset-identity">
-        <span class="dataset-dot" aria-hidden="true"></span>
-        <div><span>Active dataset</span><strong id="datasetFileName">—</strong></div>
-      </div>
-      <div id="fileStats" class="dataset-stats"></div>
-      <div class="dataset-actions">
-        <label id="sheetPickerWrap" class="field compact hidden">
-          <span class="sr-only">Selected sheet</span>
-          <select id="sheetSelect" aria-label="Selected sheet"></select>
-        </label>
-        <button id="changeSheetBtn" class="ghost-btn" type="button">Change sheet</button>
-        <button id="replaceFileBtn" class="ghost-btn" type="button">Replace file</button>
-        <button id="clearDataBtn" class="ghost-btn danger-text" type="button">Clear data</button>
-      </div>
-    </section>
 
-    <section id="linkedSurveyPanel" class="linked-survey-panel hidden" aria-labelledby="linked-survey-title">
-      <div class="linked-survey-heading">
-        <div>
-          <p class="eyebrow">Optional linked analysis</p>
-          <h2 id="linked-survey-title">Link a secondary survey</h2>
-          <p>Match this survey to another survey and use one of its questions as a breakdown across charts and reports.</p>
-        </div>
-        <div class="linked-survey-heading-actions"><span id="linkHeadlineStatus" class="link-headline-status hidden"></span><button id="toggleLinkedSurveyBtn" class="secondary-btn" type="button" aria-expanded="false">Set up link</button></div>
-      </div>
-      <div id="linkedSurveySetup" class="linked-survey-setup hidden">
-        <div class="link-workflow-grid">
-          <div class="link-step-card">
-            <div class="step-label"><span>1</span><div><strong>Primary survey</strong><small>The active dataset and sheet</small></div></div>
-            <div class="link-primary-summary"><strong id="linkPrimaryName">—</strong><span id="linkPrimarySheet">—</span></div>
-            <label class="field"><span>Primary matching field</span><select id="linkPrimaryField"></select></label>
-          </div>
-          <div class="link-step-card">
-            <div class="step-label"><span>2</span><div><strong>Secondary survey</strong><small>Another sheet or a separate file</small></div></div>
-            <label class="field"><span>Secondary source</span><select id="linkSecondarySource"><option value="workbook">Another sheet in the primary workbook</option><option value="file">Upload a separate survey file</option></select></label>
-            <label id="linkSecondaryFileWrap" class="field hidden"><span>Secondary file</span><input id="linkSecondaryFile" type="file" accept=".xlsx,.xls,.csv"></label>
-            <div id="linkSecondaryFileName" class="column-note"></div>
-            <label class="field"><span>Secondary sheet</span><select id="linkSecondarySheet"></select></label>
-            <label class="field"><span>Secondary matching field</span><select id="linkSecondaryField"></select></label>
-          </div>
-          <div class="link-step-card">
-            <div class="step-label"><span>3</span><div><strong>Disaggregation</strong><small>Choose any secondary question</small></div></div>
-            <label class="field"><span>Secondary question</span><select id="linkQuestion"><option value="">Select after matching</option></select></label>
-            <p class="column-note">Multi-select answers are expanded so each matched response appears in every selected category.</p>
-            <div class="link-actions"><button id="createSurveyLinkBtn" class="primary-btn" type="button">Match surveys</button><button id="clearSurveyLinkBtn" class="ghost-btn danger-text hidden" type="button">Remove link</button></div>
-          </div>
-        </div>
-        <div id="linkValidation" class="status-message" role="status" aria-live="polite"></div>
-        <div id="linkStatusSummary" class="link-status-summary hidden" aria-label="Survey matching status"></div>
-        <div id="linkWarnings" class="link-warnings hidden"></div>
-        <div id="linkDiagnosticActions" class="link-diagnostic-actions hidden">
-          <button id="viewUnmatchedBtn" class="secondary-btn" type="button">View unmatched records</button>
-          <button id="downloadUnmatchedBtn" class="secondary-btn" type="button">Download unmatched CSV</button>
-          <button id="viewDuplicatesBtn" class="secondary-btn" type="button">View duplicate values</button>
-        </div>
-      </div>
-    </section>
 
     <nav id="mainTabs" class="main-tabs hidden" aria-label="Analysis views" role="tablist">
       <button id="chartsTab" class="tab-button is-active" type="button" role="tab" aria-selected="true" aria-controls="dashboardSection" data-tab="charts">
@@ -172,6 +129,12 @@
           <button id="addChartBtn" class="primary-btn" type="button">+ Add chart</button>
         </div>
       </div>
+      <div class="workspace-source-row">        <label id="sheetPickerWrap" class="field compact hidden">
+          <span class="sr-only">Selected sheet</span>
+          <select id="sheetSelect" aria-label="Selected sheet"></select>
+        </label>
+        <button id="changeSheetBtn" class="ghost-btn" type="button">Change sheet</button>
+<button id="chartLinkShortcut" class="secondary-btn" type="button">Link a secondary survey</button></div>
       <section class="chart-selection-panel" aria-labelledby="chart-selection-title">
         <div class="chart-selection-heading">
           <div>
@@ -197,17 +160,69 @@
           <h2 id="distribution-title">Question Breakdown Report</h2>
           <p>Create an Excel-style report showing counts and percentages for selected survey questions.</p>
         </div>
+
+      </div>
+
+      <div id="reportFreshness" class="status-message warning hidden" role="status" aria-live="polite"></div>
+      <div id="reportStatus" class="status-message" role="status" aria-live="polite"></div>
+      <div class="report-builder">
+        <aside class="report-settings-panel" aria-label="Report settings">
+          <h3>Report data</h3>
         <div class="report-source-compact">
           <label class="field compact">
             <span>Source</span>
             <select id="reportSourceSelect" aria-label="Report source"></select>
           </label>
+        </div>          <label class="field">
+            <span>Primary sheet</span>
+            <select id="reportDataSheetSelect"></select>
+          </label>
+
+    <section id="linkedSurveyPanel" class="linked-survey-panel hidden" aria-labelledby="linked-survey-title">
+      <div class="linked-survey-heading">
+        <div>
+          <p class="eyebrow">Optional linked analysis</p>
+          <h3 id="linked-survey-title">Link a secondary survey</h3>
+          <p>Optional: match the primary sheet to a secondary survey for linked breakdowns.</p>
+        </div>
+        <div class="linked-survey-heading-actions"><span id="linkHeadlineStatus" class="link-headline-status hidden"></span><button id="toggleLinkedSurveyBtn" class="secondary-btn" type="button" aria-expanded="false">Set up link</button></div>
+      </div>
+      <div id="linkedSurveySetup" class="linked-survey-setup hidden">
+        <div class="link-workflow-grid">
+          <div class="link-step-card">
+            <div class="step-label"><span>1</span><div><strong>Primary survey</strong><small>The report source and primary sheet</small></div></div>
+            <div class="link-primary-summary"><strong id="linkPrimaryName">—</strong><span id="linkPrimarySheet">—</span></div>
+            <label class="field"><span>Matching method</span><select id="linkMatchMode"><option value="normalized">Normalize names and spacing</option><option value="exact">Exact identifier</option></select></label>
+            <label class="field"><span>Primary matching field</span><select id="linkPrimaryField"></select></label>
+          </div>
+          <div class="link-step-card">
+            <div class="step-label"><span>2</span><div><strong>Secondary survey</strong><small>Another sheet or a separate file</small></div></div>
+            <label class="field"><span>Secondary source</span><select id="linkSecondarySource"><option value="workbook">Another sheet in the report workbook</option><option value="file">Upload a separate survey file</option></select></label>
+            <label id="linkSecondaryFileWrap" class="field hidden"><span>Secondary file</span><input id="linkSecondaryFile" type="file" accept=".xlsx,.xls,.csv"></label>
+            <div id="linkSecondaryFileName" class="column-note"></div>
+            <label class="field"><span>Secondary sheet</span><select id="linkSecondarySheet"></select></label>
+            <label class="field"><span>Secondary matching field</span><select id="linkSecondaryField"></select></label>
+          </div>
+          <div class="link-step-card">
+            <div class="step-label"><span>3</span><div><strong>Disaggregation</strong><small>Choose any secondary question</small></div></div>
+            <label class="field"><span>Secondary answer separator</span><select id="linkDelimiter"><option value="semicolon">Semicolon (;)</option><option value="none">Single answer / do not split</option><option value="comma">Comma (,)</option><option value="pipe">Pipe (|)</option><option value="newline">Line break</option></select></label>
+            <label class="field"><span>Secondary question</span><select id="linkQuestion"><option value="">Select after matching</option></select></label>
+            <p class="column-note">Choose the separator used in the secondary question. Each respondent is counted once per selected category.</p>
+            <div class="link-actions"><button id="createSurveyLinkBtn" class="primary-btn" type="button">Match surveys</button><button id="clearSurveyLinkBtn" class="ghost-btn danger-text hidden" type="button">Remove link</button></div>
+          </div>
+        </div>
+        <div id="linkValidation" class="status-message" role="status" aria-live="polite"></div>
+        <div id="linkStatusSummary" class="link-status-summary hidden" aria-label="Survey matching status"></div>
+        <div id="linkWarnings" class="link-warnings hidden"></div>
+        <div id="linkDiagnosticActions" class="link-diagnostic-actions hidden">
+          <button id="viewUnmatchedBtn" class="secondary-btn" type="button">View unmatched records</button>
+          <button id="downloadUnmatchedBtn" class="secondary-btn" type="button">Download unmatched CSV</button>
+          <button id="viewDuplicatesBtn" class="secondary-btn" type="button">View duplicate values</button>
         </div>
       </div>
+    </section>
 
-      <div id="reportStatus" class="status-message" role="status" aria-live="polite"></div>
-      <div class="report-builder">
-        <aside class="report-settings-panel" aria-label="Report settings">
+          <div class="settings-divider"></div>
           <div class="step-label"><span>1</span><div><strong>Select questions</strong><small>Choose what to include</small></div></div>
           <label class="search-field">
             <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5"/><path d="m13 13 4 4"/></svg>
@@ -216,7 +231,7 @@
           </label>
           <div class="checklist-toolbar">
             <button id="selectAllQuestionsBtn" class="text-btn" type="button">Select all</button>
-            <button id="selectMultipleChoiceBtn" class="text-btn" type="button">Multiple choice</button>
+            <button id="selectVisibleQuestionsBtn" class="text-btn" type="button">Select visible</button>
             <button id="clearQuestionsBtn" class="text-btn" type="button">Clear all</button>
           </div>
           <div id="questionChecklist" class="checklist-box tall"></div>
@@ -229,41 +244,42 @@
             <span>Report name</span>
             <input id="reportNameInput" type="text" placeholder="Question breakdown">
           </label>
-          <label class="field">
-            <span>Data sheet</span>
-            <select id="reportDataSheetSelect"></select>
-          </label>
+          <label class="toggle-row"><input id="includeLargeReportColumns" type="checkbox"> Include questions and groups with more than 15 choices</label>
+          <label class="field"><span>Response separator</span><select id="responseDelimiter"><option value="semicolon">Semicolon (;)</option><option value="none">Single answer / do not split</option><option value="comma">Comma (,)</option><option value="pipe">Pipe (|)</option><option value="newline">Line break</option></select></label>
           <label class="field report-breakdown-field">
             <span>Break down by</span>
             <select id="primaryBreakdownSelect"></select>
           </label>
           <div class="field">
             <span>Filter report by</span>
-            <select id="reportFilterColumnSelect"></select>
+            <select id="reportFilterColumnSelect" aria-label="Filter report by"></select>
+            <div id="reportFilterTools" class="hidden"><input id="reportFilterSearch" type="search" placeholder="Search filter values" aria-label="Search filter values"><div class="checklist-toolbar"><button id="selectFilterValuesBtn" type="button" class="text-btn">Select all values</button><button id="clearFilterValuesBtn" type="button" class="text-btn">Clear values</button></div></div>
             <div id="reportFilterValues" class="checklist-box report-filter-values hidden"></div>
             <div id="reportFilterNote" class="column-note"></div>
           </div>
+          <div id="additionalReportFilters"></div><button id="addReportFilterBtn" type="button" class="secondary-btn full-btn">Add another filter</button>
           <button id="generateReportBtn" class="primary-btn full-btn" type="button">Generate breakdown report</button>
         </aside>
 
         <div class="report-output-panel">
           <div class="report-toolbar" aria-label="Report display and export tools">
             <div class="segmented-control" role="group" aria-label="Report values">
-              <button type="button" data-report-mode="count">Count</button>
-              <button type="button" data-report-mode="percentage">Percentage</button>
-              <button class="is-active" type="button" data-report-mode="both">Count + Percentage</button>
+              <button type="button" data-report-mode="count" aria-pressed="false">Count</button>
+              <button type="button" data-report-mode="percentage" aria-pressed="false">Percentage</button>
+              <button class="is-active" type="button" data-report-mode="both" aria-pressed="true">Count + Percentage</button>
             </div>
             <div class="toolbar-spacer"></div>
             <div class="segmented-control density-control" role="group" aria-label="Table density">
-              <button class="is-active" type="button" data-density="compact">Compact</button>
-              <button type="button" data-density="comfortable">Comfortable</button>
+              <button class="is-active" type="button" data-density="compact" aria-pressed="true">Compact</button>
+              <button type="button" data-density="comfortable" aria-pressed="false">Comfortable</button>
             </div>
             <div class="zoom-control" role="group" aria-label="Report zoom">
               <button id="zoomOutBtn" class="icon-btn" type="button" title="Zoom out" aria-label="Zoom out">−</button>
               <span id="zoomValue">100%</span>
               <button id="zoomInBtn" class="icon-btn" type="button" title="Zoom in" aria-label="Zoom in">+</button>
             </div>
-            <button id="fullscreenReportBtn" class="icon-btn" type="button" title="Full-screen preview" aria-label="Full-screen report preview">⛶</button>
+            <button id="fullscreenReportBtn" aria-pressed="false" class="icon-btn" type="button" title="Full-screen preview" aria-label="Full-screen report preview">⛶</button>
+            <label class="field compact export-mode"><span>Export values</span><select id="reportExportMode"><option value="both">Counts + percentages</option><option value="count">Counts only</option><option value="percentage">Percentages only</option></select></label>
             <button id="downloadReportCsvBtn" class="secondary-btn" type="button">Download CSV</button>
             <button id="downloadReportXlsxBtn" class="primary-btn" type="button">Download Excel</button>
           </div>
@@ -283,7 +299,8 @@
         <div>
           <p class="eyebrow">Dataset quality</p>
           <h2>Data Preview</h2>
-          <p>Review the first 100 rows and control which columns are available for analysis.</p>
+          <p>Review source rows and choose which columns are available in charts and reports.</p>
+          <label class="field compact"><span>Preview sheet</span><select id="previewSheetSelect"></select></label>
         </div>
         <label class="search-field preview-search">
           <svg viewBox="0 0 20 20" aria-hidden="true"><circle cx="9" cy="9" r="5"/><path d="m13 13 4 4"/></svg>
@@ -413,8 +430,9 @@
                 <details class="advanced-controls">
                   <summary>Advanced controls</summary>
                   <div class="advanced-content">
+                    <label class="field"><span>Response separator</span><select class="response-delimiter"><option value="semicolon">Semicolon (;)</option><option value="none">Single answer / do not split</option><option value="comma">Comma (,)</option><option value="pipe">Pipe (|)</option><option value="newline">Line break</option></select></label><label class="toggle-row"><input class="binary-labels" type="checkbox"> Display 0 / 1 as No / Yes</label>
                     <label class="field single-setting"><span>Sort responses</span><select class="sort-mode"><option value="desc">Highest to lowest</option><option value="asc">Lowest to highest</option><option value="alpha">Alphabetically</option></select></label>
-                    <label class="field single-setting"><span>Show responses</span><select class="top-mode"><option value="15">Top 15</option><option value="10">Top 10</option><option value="5">Top 5</option></select></label>
+                    <label class="field single-setting"><span>Show responses</span><select class="top-mode"><option value="all">All responses</option><option value="15">Top 15</option><option value="10">Top 10</option><option value="5">Top 5</option></select></label>
                     <div class="toggle-row single-setting"><label><input class="show-counts" type="checkbox" checked> Show count</label><label><input class="show-percentages" type="checkbox" checked> Show percentage</label></div>
                     <div class="toggle-row"><label><input class="include-blanks" type="checkbox" checked> Include blank / no response</label></div>
                   </div>
@@ -460,7 +478,7 @@
             </section>
             <div class="result-heading"><div><h3>Summary table</h3><p>Counts and percentages for the current view.</p></div><input class="summary-search" type="search" placeholder="Search responses" aria-label="Search response summary"></div>
             <div class="table-note"></div>
-            <div class="table-wrap summary-table"></div>
+            <div class="table-wrap summary-table"></div><div class="summary-pagination"><button class="secondary-btn summary-prev" type="button">Previous</button><span class="summary-page" role="status"></span><button class="secondary-btn summary-next" type="button">Next</button></div>
           </div>
         </div>
       </div>
@@ -478,12 +496,14 @@
     </div>
   </template>
 
-  <script src="https://cdn.sheetjs.com/xlsx-0.20.3/package/dist/xlsx.full.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.7/dist/chart.umd.min.js"></script>
-  <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-datalabels@2.2.0"></script>
-  <script src="chart-rules.js?v=20260908-1"></script>
-  <script src="data-dictionary.js?v=20260904-2"></script>
-  <script src="linked-survey.js?v=20260904-1"></script>
-  <script src="script.js?v=20260908-2"></script>
+  <script src="vendor/xlsx.full.min.js"></script>
+  <script src="vendor/chart.umd.min.js"></script>
+  <script src="vendor/chartjs-plugin-datalabels.min.js"></script>
+  <script src="survey-core.js?v=20261004-2"></script>
+  <script src="data-io.js?v=20261004-2"></script>
+  <script src="chart-rules.js?v=20261004-2"></script>
+  <script src="data-dictionary.js?v=20261004-2"></script>
+  <script src="linked-survey.js?v=20261004-2"></script>
+  <script src="script.js?v=20261004-2"></script>
 </body>
 </html>

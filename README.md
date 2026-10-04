@@ -1,103 +1,61 @@
 # Survey Response Analyzer
 
-A static web app for analyzing Excel, CSV, and public Google Sheets survey-style data directly in the browser.
+A static browser application for Excel, CSV, and public Google Sheets surveys. Uploaded files are processed locally. There is no analytics backend, account, database, or paid API. Public Google Sheets are fetched directly from Google without credentials.
 
-## What it does
+## Workspaces
 
-- Upload `.xlsx`, `.xls`, or `.csv` files.
-- Load a public Google Sheet that does not require sign-in.
-- Choose a sheet when an Excel file has multiple sheets.
-- Create multiple chart cards from the same file.
-- Let users choose any non-metadata response column for a chart, including empty and open-ended-style columns.
-- Choose one or more response questions and generate all selected charts with a single action, without duplicating charts already in the workspace.
-- Analyze one column by response count and percentage.
-- Split semicolon-delimited multi-select responses into individual dashboard choices without changing raw data.
-- Compare one column against another.
-- Add one or more checklist filters.
-- Hide selected responses or manually combine similar response labels.
-- Navigate focused Charts, Question Breakdown Report, and Data Preview workspaces.
-- Generate sheet-style question breakdown reports from the active workbook or public Google Sheet.
-- Preview the first 100 rows, search the dataset, inspect column quality, and hide columns from chart analysis without changing the source.
-- Choose response columns to include with checked lists.
-- Optionally break those response columns down by one selected column.
-- Filter breakdown reports by one selected column with fewer than 500 unique values.
-- View the generated breakdown table in a fixed scrollable panel with percentage heat maps.
-- Hide open-ended-style columns from report choices when they have more than 15 unique responses.
-- Export chart images, summary tables, and filtered data as CSV.
-- Export generated breakdown reports as CSV or Excel.
-- Optionally link the active survey to another sheet or survey file using user-selected matching fields.
-- Review matched/unmatched rates, inspect duplicates, and view or download unmatched primary records.
-- Use any linked-survey question as a chart, filter, or report breakdown, including multi-select questions.
+- **Charts:** choose questions, generate chart cards, compare questions, add checklist filters, merge or hide answers, and export images or CSV. The sheet selector belongs to this workspace. Switching sheets preserves each sheet's chart settings for the current browser session.
+- **Breakdown Report:** choose the report source and primary sheet within its options. Optionally link another sheet or file, choose questions and a grouping column, and combine multiple filters. Sheet changes keep this tab open. Settings and selections are retained per source/sheet during the session.
+- **Data Preview:** inspect source row numbers, search records, and hide columns from charts and reports without modifying the workbook. Chart summary tables support paging; the raw preview shows the first 100 matching rows.
 
-Uploaded files are processed only in your browser. The app does not use a backend, database, sign-in, API key, or paid service.
+The file status and active source/sheet/row counts appear above the application title. **Clear data** clears every loaded source, chart, link, and report. A replacement file is parsed and validated before the current analysis is cleared; failed imports preserve it.
 
-## Files
+## Import rules
 
-- `index.html`
-- `style.css`
-- `script.js`
-- `data-dictionary.js`
-- `README.md`
+Use the first row as headers. Completely blank records are ignored, while source row numbers retain gaps. Duplicate, blank, and reserved internal headers receive unique names; source values are preserved. The optional **Data Dictionary** sheet maps sheet name (A), source header (B), and full display question (C), with an optional header row.
 
-The app uses CDN links for:
+CSV supports comma, tab, and semicolon field separators, quoted multiline fields, Unicode BOMs, and malformed-quote errors. Response separators are separate from CSV field separators: select semicolon (default), comma, pipe, line break, or **Single answer / do not split**. Secondary linked questions have their own separator setting. Dates use a consistent ISO representation in analysis.
 
-- SheetJS
-- Chart.js
-- Chart.js Data Labels plugin
+## Counts and percentages
 
-## Eligible chart selection
+Answer labels match case-insensitively after whitespace/quote normalization. Repeated choices and choices merged into one label count once per respondent. **Other** represents the union of respondents in the capped categories, with a distinct name when a literal Other answer exists. Choose **All responses** to remove chart caps.
 
-The Charts workspace lists every non-metadata response column before generating anything. Select individual questions or **Select all**, adjust the selection as needed, and choose **Generate Selected Charts**. Blank responses are not shown in generated charts. Existing charts are preserved, and repeating generation adds only selected questions that do not already have a chart. Each generated chart defaults to an automatic view, and its header **View** selector lets you switch to horizontal or vertical bars, pie, doughnut, line, or table-only output. For stacked charts, choose a comparison column in the chart settings and then select a stacked comparison view.
+Charts exclude blanks by default. Including blanks changes the percentage base to all included respondents. Binary 0/1 labels change to No/Yes only when enabled. Pie/doughnut and 100% stacked views switch to suitable bar views when choices overlap.
 
-## Optional Data Dictionary
+Reports calculate percentages using answered respondents for each question within each group. Each section includes **Answered**, **Missing**, and **Eligible** totals. An unanswered group has a missing percentage (displayed as a dash), rather than an invented 0%. Multiple-choice percentages can sum above 100%; the base is respondents rather than selections. Expected scale labels never suppress unexpected observed answers.
 
-An uploaded workbook may include a sheet named **Data Dictionary**. Put the survey sheet name in column A, the original/header name in column B, and the full display question in column C. A header row is optional. The analyzer matches trimmed, case-insensitive sheet and header names, applies mappings independently per survey sheet, and falls back to the original header when a mapping or display question is missing. Raw headers remain the internal data keys, so filters, matching, and calculations are not changed by display text.
+Questions and grouping columns with more than 15 choices are hidden by default; enable the explicit override to include them. Filters support fewer than 500 unique values, value search, select/clear controls, and AND between filter columns. Within each column, a respondent qualifies if any chosen category matches. **Select visible** applies to search results; **Select all** and **Clear all** apply to the entire question list.
 
-## Multi-select responses
+Changing report settings marks the previous preview stale and blocks exports until regeneration. Generation runs in a worker over HTTP with progress, timeout, and cancellation; direct file opening uses a yielding fallback.
 
-For dashboard charts, filters, and breakdown reports, semicolons separate multiple selected choices. Each choice is counted independently and choices are sorted by descending count by default. Percentages use the number of respondents with at least one selection as the denominator, so multi-select percentages may total more than 100%. The source workbook, raw response values, and data preview remain unchanged.
+## Linked surveys
 
-## Question Breakdown Report
+Open **Link a secondary survey** within the report options (or use the Charts shortcut). Match the selected report primary sheet to another sheet or file. Normalized matching tolerates case, spacing, and punctuation; **Exact identifier** preserves exact text matching. Normalization collisions are disclosed. Duplicate secondary keys are ambiguous and excluded; unmatched primary rows are inspectable/downloadable with original row numbers.
 
-The Question Breakdown Report uses the currently active dataset. It can use:
+Select a secondary question after matching. Multi-choice categories can overlap; coverage distinguishes matched sites and survey response rows. Links are scoped to the matched primary workbook/sheet. Changing the report primary context clears the match. Linked questions are available to Charts when its active sheet matches that primary context.
 
-- The uploaded workbook.
-- A public Google Sheet link that can be opened without signing in. Loaded public sheets can also be charted and used for breakdown reports.
+## Exports
 
-For best results, include sheets like:
+CSV/Excel reports include source, sheet, filter, grouping, generation time, included/excluded rows, and denominator information, plus linked category coverage where applicable. Choose counts, percentages, or both independently of preview mode. Excel percentages are numeric cells formatted as percentages; base totals remain numbers. CSV includes a UTF-8 BOM and protects formula-like text. Excel text is exported as text, never as executable formulas.
 
-- A raw data sheet with one header row.
+## Run and verify
 
-Response-column choices appear checked by default so you can uncheck anything you do not want in the output. Columns with no responses or more than 15 unique responses are hidden from report choices so empty and open-ended questions do not create unusable breakdowns. The breakdown dropdown starts with no breakdown selected; when you choose one, that choice appears above the on-screen report. The report filter lets you select a column with fewer than 500 unique values, then uncheck values you want to exclude.
+Use Node.js 24 or later:
 
-Private Google Sheets are not connected in this version because that would require Google sign-in/API setup.
+```sh
+npm test
+npm run build
+python -m http.server 8765
+```
 
-## Linked survey analysis
+Open `http://localhost:8765`. Opening `index.html` directly also works with parsing/report fallbacks, but serving over HTTP enables workers. `npm run build` produces static assets in `dist/` and a Fetch-compatible worker in `dist/server/index.js`. Both root and `/Survey_breakdowm` worker routes are supported, including binary logo assets. GitHub Pages can serve the repository's root from the main branch after changes are merged.
 
-After loading a primary survey, open **Link a secondary survey**. The secondary survey can be another sheet in the active workbook or a separate Excel/CSV file. Select one matching field from each survey, review the match diagnostics, and then choose a secondary question for disaggregation.
+Dependencies are pinned and bundled in `vendor/` so uploads do not require CDN script requests: SheetJS 0.20.3, Chart.js 4.4.7, and chartjs-plugin-datalabels 2.2.0. License notices and checksums are included. A content security policy limits scripts/workers to local assets and permits Google export connections.
 
-Matching ignores capitalization, surrounding whitespace, common punctuation, and spacing differences. Primary rows without a unique secondary match are reported and excluded only while linked analysis is active. Duplicate secondary keys are treated as ambiguous and are never selected automatically. Removing the link restores the original single-survey workflow.
+## Practical limits
 
-Multi-select secondary answers separated by commas, semicolons, pipes, or line breaks are expanded into category memberships. A primary response can therefore appear in more than one linked category. Linked reports include category-level matched-site and survey-response counts, and those rows are included in CSV and Excel report exports.
+This is descriptive survey analysis, without weighting, statistical tests, or imputation. The application does not recalculate Excel formulas; cached values must exist. Very wide, high-cardinality reports can still consume substantial memory and render slowly, even though calculation runs off the UI thread. Generate only needed questions for large datasets. Session state is not retained across browser reloads; the app warns before leaving when analysis exists. Raw data preview remains capped at 100 matching rows. Private Google Sheets require an authenticated integration and are not supported.
 
-## Run locally
+## CI template
 
-Open `index.html` in your browser.
-
-## Deploy with GitHub Pages
-
-1. Create a GitHub repository.
-2. Upload the project files.
-3. Open the repository settings.
-4. Open the Pages section.
-5. Select deployment from the main branch.
-6. Open the generated GitHub Pages URL.
-
-## Notes
-
-- The first row is treated as the column header row.
-- Completely empty rows are ignored.
-- Blank cells can be grouped as `No Response` when a chart is configured to include blanks.
-- Zero and `false` values are preserved as valid responses.
-- The original uploaded file is not changed.
-- The app is designed for normal Excel and CSV files up to about 50,000 rows.
+`ci/validate.yml` provides GitHub Actions test/build validation. Move it to `.github/workflows/validate.yml` to enable it. The current GitHub authentication token lacks the `workflow` scope, so the implementation PR includes a ready template without changing repository automation permissions.

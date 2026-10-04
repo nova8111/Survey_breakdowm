@@ -23,14 +23,25 @@
       .trim();
   }
 
-  function splitMultiSelect(value) {
-    if (Array.isArray(value)) return unique(value.flatMap(splitMultiSelect));
+  function splitMultiSelect(value, delimiter = 'all') {
+    if (Array.isArray(value)) {
+      return unique(value.flat(Infinity).map(item => text(item)).filter(Boolean));
+    }
     const normalized = text(value);
     if (!normalized) return [];
-    return unique(normalized
-      .split(/\r?\n|\s*;\s*|\s*\|\s*|\s*,\s*/)
-      .map(item => item.trim())
-      .filter(Boolean));
+    const separators = {
+      all: /\r?\n|\s*;\s*|\s*\|\s*|\s*,\s*/,
+      semicolon: /\s*;\s*/,
+      comma: /\s*,\s*/,
+      pipe: /\s*\|\s*/,
+      newline: /\r?\n/,
+      none: null
+    };
+    const separator = Object.prototype.hasOwnProperty.call(separators, delimiter)
+      ? separators[delimiter]
+      : separators.all;
+    return unique((separator ? normalized.split(separator) : [normalized])
+      .map(item => item.trim()).filter(Boolean));
   }
 
   function unique(values) {
@@ -43,14 +54,22 @@
     });
   }
 
-  function collectKeys(rows, field) {
+  function rowNumber(row, index) {
+    return typeof row.__sourceRowNumber === 'number' && Number.isFinite(row.__sourceRowNumber)
+      ? row.__sourceRowNumber
+      : index + 2;
+  }
+
+  function collectKeys(rows, field, normalize) {
     const groups = new Map();
     rows.forEach((row, index) => {
       const rawValue = text(row[field]);
-      const key = normalizeMatchKey(rawValue);
+      const key = normalize(rawValue);
       if (!key) return;
-      if (!groups.has(key)) groups.set(key, { key, value: rawValue, rowNumbers: [] });
-      groups.get(key).rowNumbers.push(index + 2);
+      if (!groups.has(key)) groups.set(key, { key, value: rawValue, rowNumbers: [], rawValues: [] });
+      const group = groups.get(key);
+      group.rowNumbers.push(rowNumber(row, index));
+      if (!group.rawValues.includes(rawValue)) group.rawValues.push(rawValue);
     });
     return groups;
   }
@@ -58,10 +77,10 @@
   function duplicateGroups(groups) {
     return Array.from(groups.values())
       .filter(group => group.rowNumbers.length > 1)
-      .map(group => ({ ...group, count: group.rowNumbers.length }));
+      .map(group => ({ key: group.key, value: group.value, rowNumbers: group.rowNumbers, count: group.rowNumbers.length }));
   }
 
-  function analyzeLink(primaryRows, secondaryRows, primaryField, secondaryField) {
+  function analyzeLink(primaryRows, secondaryRows, primaryField, secondaryField, options = {}) {
     if (!Array.isArray(primaryRows) || !Array.isArray(secondaryRows)) {
       throw new Error('Both surveys must contain row arrays.');
     }
@@ -69,16 +88,18 @@
     if (primaryRows.length && !(primaryField in primaryRows[0])) throw new Error('The selected primary matching field is invalid.');
     if (secondaryRows.length && !(secondaryField in secondaryRows[0])) throw new Error('The selected secondary matching field is invalid.');
 
-    const primaryGroups = collectKeys(primaryRows, primaryField);
-    const secondaryGroups = collectKeys(secondaryRows, secondaryField);
+    const matchingMode = options.mode === 'exact' ? 'exact' : 'normalized';
+    const normalize = matchingMode === 'exact' ? value => text(value) : normalizeMatchKey;
+    const primaryGroups = collectKeys(primaryRows, primaryField, normalize);
+    const secondaryGroups = collectKeys(secondaryRows, secondaryField, normalize);
     const primaryDuplicates = duplicateGroups(primaryGroups);
     const secondaryDuplicates = duplicateGroups(secondaryGroups);
     const ambiguousSecondaryKeys = new Set(secondaryDuplicates.map(group => group.key));
     const secondaryIndex = new Map();
 
     secondaryRows.forEach((row, index) => {
-      const key = normalizeMatchKey(row[secondaryField]);
-      if (key && !ambiguousSecondaryKeys.has(key)) secondaryIndex.set(key, { row, rowNumber: index + 2 });
+      const key = normalize(row[secondaryField]);
+      if (key && !ambiguousSecondaryKeys.has(key)) secondaryIndex.set(key, { row, rowNumber: rowNumber(row, index) });
     });
 
     const matched = [];
@@ -86,31 +107,44 @@
     const matchedKeys = new Set();
     primaryRows.forEach((row, index) => {
       const rawValue = text(row[primaryField]);
-      const key = normalizeMatchKey(rawValue);
+      const key = normalize(rawValue);
       let reason = '';
       if (!key) reason = 'Missing primary matching value';
       else if (ambiguousSecondaryKeys.has(key)) reason = 'Duplicate value in secondary survey';
       else if (!secondaryIndex.has(key)) reason = 'No matching secondary record';
 
       if (reason) {
-        unmatched.push({ row, rowNumber: index + 2, value: rawValue, key, reason });
+        unmatched.push({ row, rowNumber: rowNumber(row, index), value: rawValue, key, reason });
         return;
       }
 
       const secondary = secondaryIndex.get(key);
-      matched.push({ primary: row, secondary: secondary.row, key, primaryRowNumber: index + 2, secondaryRowNumber: secondary.rowNumber });
+      matched.push({ primary: row, secondary: secondary.row, key, primaryRowNumber: rowNumber(row, index), secondaryRowNumber: secondary.rowNumber });
       matchedKeys.add(key);
     });
 
+    const normalizationCollisions = matchingMode === 'normalized'
+      ? Array.from(new Set([...primaryGroups.keys(), ...secondaryGroups.keys()])).map(key => {
+        const primary = primaryGroups.get(key);
+        const secondary = secondaryGroups.get(key);
+        const primaryValues = primary ? primary.rawValues : [];
+        const secondaryValues = secondary ? secondary.rawValues : [];
+        const values = [...new Set([...primaryValues, ...secondaryValues])];
+        return values.length > 1 ? { key, primaryValues, secondaryValues } : null;
+      }).filter(Boolean)
+      : [];
     const matchedRows = matched.length;
     const unmatchedRows = unmatched.length;
     const totalPrimaryRows = primaryRows.length;
     return {
       primaryField,
       secondaryField,
+      matchingMode,
+      mode: matchingMode,
       matched,
       unmatched,
       duplicates: { primary: primaryDuplicates, secondary: secondaryDuplicates },
+      normalizationCollisions,
       stats: {
         totalPrimaryRows,
         totalSecondaryRows: secondaryRows.length,
@@ -133,10 +167,15 @@
     if (linkResult.matched.some(match => !match.secondary || !(question in match.secondary))) {
       throw new Error('The selected secondary survey question is invalid.');
     }
-    const column = linkedColumnName(options.displayQuestion || question, options.prefix);
+    const requestedColumn = linkedColumnName(options.displayQuestion || question, options.prefix);
+    const existingColumns = new Set(linkResult.matched.flatMap(match => Object.keys(match.primary || {})));
+    let column = requestedColumn;
+    let suffix = 2;
+    while (existingColumns.has(column)) column = `${requestedColumn} (${suffix++})`;
+    const delimiter = options.delimiter === undefined ? 'semicolon' : options.delimiter;
     const rows = linkResult.matched.map(match => ({
       ...match.primary,
-      [column]: splitMultiSelect(match.secondary[question]),
+      [column]: splitMultiSelect(match.secondary[question], delimiter),
       __linkedSiteKey: match.key
     }));
     return { rows, column };
@@ -145,7 +184,9 @@
   function buildCategorySummary(rows, column) {
     const categories = new Map();
     rows.forEach(row => {
-      const values = splitMultiSelect(row[column]);
+      const values = Array.isArray(row[column])
+        ? splitMultiSelect(row[column], 'none')
+        : splitMultiSelect(row[column], 'semicolon');
       values.forEach(value => {
         const key = value.toLocaleLowerCase();
         if (!categories.has(key)) categories.set(key, { category: value, matchedSites: new Set(), surveyResponses: 0 });
