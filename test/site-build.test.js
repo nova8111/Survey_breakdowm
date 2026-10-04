@@ -21,3 +21,13 @@ test('build packages worker dependencies and serves unchanged binary assets at b
   }
   assert.equal((await worker.fetch(new Request('https://example.test/missing.js'))).status, 404);
 });
+
+test('vendored library bytes match the pinned checksums', async () => {
+  const { createHash } = await import('node:crypto');
+  const checksums = (await readFile(new URL('../vendor/SHA256SUMS', import.meta.url), 'utf8')).replace(/^\uFEFF/, '').trim().split(/\r?\n/);
+  for (const line of checksums) {
+    const [expected, name] = line.split(/\s+/);
+    const bytes = await readFile(new URL(`../vendor/${name}`, import.meta.url));
+    assert.equal(createHash('sha256').update(bytes).digest('hex'), expected, name);
+  }
+});
